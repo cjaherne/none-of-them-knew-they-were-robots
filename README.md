@@ -74,8 +74,9 @@ kubectl get agenttasks        # or: kubectl get at
 ├── packages/
 │   ├── shared/             Types, config, safety rules
 │   ├── services/           Transcription, LLM, TTS, task store, skill loader
-│   └── api/                REST + WebSocket Lambda handlers
+│   └── api/                REST + WebSocket Lambda handlers + setup endpoints
 ├── skills/                 Agent skill packs + registry (hot-configurable)
+├── scripts/                Setup scripts (GitHub PAT, Cursor API key)
 ├── helm/agent-system/      Helm chart for K8s deployment
 ├── infra/                  AWS CDK (EKS, DynamoDB, S3, API Gateway)
 └── client/web/             Mobile-friendly voice control web UI
@@ -219,9 +220,16 @@ Type a command in the text input and press Send.
 ### API
 
 ```bash
+# Submit a task
 curl -X POST https://YOUR_API/voice-command \
   -H "Content-Type: application/json" \
   -d '{"text": "Refactor the auth module and add tests"}'
+
+# Check setup status (GitHub + Cursor credentials)
+curl https://YOUR_API/setup/status
+
+# Get task status
+curl https://YOUR_API/tasks/{taskId}
 ```
 
 ### Direct K8s pipeline
