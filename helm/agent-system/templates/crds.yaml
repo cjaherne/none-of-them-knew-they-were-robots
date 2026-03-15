@@ -1,0 +1,213 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: agentpipelines.agents.robots.io
+  labels:
+    {{- include "agent-system.labels" . | nindent 4 }}
+spec:
+  group: agents.robots.io
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Stage
+          type: string
+          jsonPath: .status.currentStage
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: ["taskId", "prompt", "stages"]
+              properties:
+                taskId:
+                  type: string
+                prompt:
+                  type: string
+                repo:
+                  type: string
+                requiresApproval:
+                  type: boolean
+                stages:
+                  type: array
+                  items:
+                    type: object
+                    required: ["name", "agents"]
+                    properties:
+                      name:
+                        type: string
+                      parallel:
+                        type: boolean
+                      agents:
+                        type: array
+                        items:
+                          type: object
+                          required: ["type"]
+                          properties:
+                            type:
+                              type: string
+                            context:
+                              type: object
+                              additionalProperties:
+                                type: string
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: [Pending, Planning, Running, AwaitingApproval, Completed, Failed]
+                currentStage:
+                  type: string
+                completedStages:
+                  type: array
+                  items:
+                    type: string
+                startedAt:
+                  type: string
+                  format: date-time
+                completedAt:
+                  type: string
+                  format: date-time
+                error:
+                  type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+  scope: Namespaced
+  names:
+    plural: agentpipelines
+    singular: agentpipeline
+    kind: AgentPipeline
+    shortNames:
+      - ap
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: agenttasks.agents.robots.io
+  labels:
+    {{- include "agent-system.labels" . | nindent 4 }}
+spec:
+  group: agents.robots.io
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Agent
+          type: string
+          jsonPath: .spec.agentType
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Pipeline
+          type: string
+          jsonPath: .spec.pipelineRef
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: ["pipelineRef", "agentType", "category", "prompt", "skillPack"]
+              properties:
+                pipelineRef:
+                  type: string
+                agentType:
+                  type: string
+                category:
+                  type: string
+                prompt:
+                  type: string
+                context:
+                  type: object
+                  additionalProperties:
+                    type: string
+                upstreamResultRefs:
+                  type: array
+                  items:
+                    type: string
+                skillPack:
+                  type: string
+                repo:
+                  type: string
+                cursorFlags:
+                  type: array
+                  items:
+                    type: string
+                resources:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: [Pending, Running, AwaitingApproval, Succeeded, Failed]
+                jobName:
+                  type: string
+                resultKey:
+                  type: string
+                filesModified:
+                  type: array
+                  items:
+                    type: string
+                startedAt:
+                  type: string
+                  format: date-time
+                completedAt:
+                  type: string
+                  format: date-time
+                error:
+                  type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+  scope: Namespaced
+  names:
+    plural: agenttasks
+    singular: agenttask
+    kind: AgentTask
+    shortNames:
+      - at

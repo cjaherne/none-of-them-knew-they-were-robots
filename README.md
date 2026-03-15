@@ -1,2 +1,347 @@
-# none-of-them-knew-they-were-robots
-A Multi Agent AI Design and Development Team
+# None of Them Knew They Were Robots
+
+A voice-controlled multi-agent AI design and development team running on AWS EKS with a custom Kubernetes operator.
+
+## Overview
+
+Speak a task into your phone, and a team of specialist AI agents -- designers, coders, testers -- collaborate via Cursor CLI headless to complete it. The system is built on an extensible framework where adding a new agent type requires only configuration, not code.
+
+### Agent Team
+
+Agents are organised into categories that define their pipeline position:
+
+| Category | Agents | Role |
+|----------|--------|------|
+| **Analysis** | BigBoss | Analyses tasks, plans agent pipelines |
+| **Design** | UX Designer, Core Code Designer, Graphics Designer | Produce specifications |
+| **Coding** | Coding Agent | Implements code using Cursor CLI |
+| **Validation** | Testing Agent | Writes and runs tests |
+
+New specialist agents can be added by creating a skill pack directory and a registry entry -- no code changes needed.
+
+### Architecture
+
+```
+Phone (voice/text) --> API Gateway --> Lambda (transcribe + parse)
+                                           |
+                                           v
+                                    DynamoDB (task state)
+                                           |
+                                           v
+                                  K8s API (AgentPipeline CRD)
+                                           |
+                                           v
+                           +----- EKS Cluster ------+
+                           |                        |
+                           |  Pipeline Controller   |
+                           |    (watches pipelines, |
+                           |     manages stages)    |
+                           |         |              |
+                           |         v              |
+                           |  Task Controller       |
+                           |    (creates K8s Jobs   |
+                           |     per agent)         |
+                           |         |              |
+                           |         v              |
+                           |  Agent Runtime Pods    |
+                           |    (Cursor CLI         |
+                           |     headless)          |
+                           |                        |
+                           +--- Karpenter ----------+
+                                (scale to zero)
+                                     |
+                                     v
+                            Result --> TTS --> Voice Response
+```
+
+### Custom Resource Definitions
+
+The operator manages two CRDs:
+
+- **AgentPipeline** -- a full multi-agent workflow (design -> code -> test)
+- **AgentTask** -- a single agent's work unit within a pipeline
+
+```bash
+kubectl get agentpipelines    # or: kubectl get ap
+kubectl get agenttasks        # or: kubectl get at
+```
+
+## Project Structure
+
+```
+├── operator/               Go kubebuilder operator (CRDs + controllers)
+├── agent-runtime/          Base agent container (TypeScript + Cursor CLI)
+├── packages/
+│   ├── shared/             Types, config, safety rules
+│   ├── services/           Transcription, LLM, TTS, task store, skill loader
+│   └── api/                REST + WebSocket Lambda handlers
+├── skills/                 Agent skill packs + registry (hot-configurable)
+├── helm/agent-system/      Helm chart for K8s deployment
+├── infra/                  AWS CDK (EKS, DynamoDB, S3, API Gateway)
+└── client/web/             Mobile-friendly voice control web UI
+```
+
+## Prerequisites
+
+- Node.js 20+
+- Go 1.22+ (for the operator)
+- Docker
+- AWS CLI configured with credentials
+- AWS CDK CLI (`npm install -g aws-cdk`)
+- kubectl
+- Helm 3
+- An OpenAI API key in AWS Secrets Manager
+- A Cursor API key
+- A GitHub account with a Personal Access Token (PAT) that has `repo` scope
+
+## Setup
+
+### 1. Install dependencies
+
+```bash
+npm install
+```
+
+### 2. Store secrets
+
+```bash
+# OpenAI key for transcription and intent parsing
+aws secretsmanager create-secret \
+  --name dev/openai-api-key \
+  --secret-string "sk-your-openai-key"
+```
+
+### 3. Deploy infrastructure
+
+```bash
+cd infra
+npx cdk bootstrap   # first time only
+npx cdk deploy --all
+```
+
+This creates the EKS cluster, DynamoDB tables, S3 buckets, ECR repos, API Gateway, and deploys the Helm chart.
+
+### 4. Build and push container images
+
+```bash
+# Get ECR login
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <ACCOUNT>.dkr.ecr.us-east-1.amazonaws.com
+
+# Build and push the operator
+cd operator
+make docker-build IMG=<ACCOUNT>.dkr.ecr.us-east-1.amazonaws.com/dev-agent-operator:latest
+make docker-push IMG=<ACCOUNT>.dkr.ecr.us-east-1.amazonaws.com/dev-agent-operator:latest
+
+# Build and push the agent runtime
+make docker-build-agent AGENT_IMG=<ACCOUNT>.dkr.ecr.us-east-1.amazonaws.com/dev-agent-runtime:latest
+make docker-push-agent AGENT_IMG=<ACCOUNT>.dkr.ecr.us-east-1.amazonaws.com/dev-agent-runtime:latest
+```
+
+### 5. Configure GitHub credentials
+
+Agents need access to your GitHub account to clone private repos and push changes. Run the setup script:
+
+```bash
+bash scripts/setup-github.sh
+```
+
+This will prompt you for:
+
+- **GitHub Personal Access Token** -- create one at https://github.com/settings/tokens with `repo` scope
+- **Git commit username** -- defaults to your GitHub display name
+- **Git commit email** -- defaults to your GitHub noreply address
+
+The script validates the token against the GitHub API and creates a Kubernetes secret (`github-credentials`) in the agent namespace.
+
+You can also set these as environment variables for non-interactive use:
+
+```bash
+GITHUB_TOKEN=ghp_xxxx GIT_USER_NAME="Your Name" GIT_USER_EMAIL="you@example.com" \
+  bash scripts/setup-github.sh
+```
+
+**Via API (alternative):**
+
+```bash
+curl -X POST https://YOUR_API/setup/github \
+  -H "Content-Type: application/json" \
+  -d '{"token": "ghp_xxxx", "username": "Your Name", "email": "you@example.com"}'
+```
+
+Check configuration status at any time:
+
+```bash
+curl https://YOUR_API/setup/status
+```
+
+### 6. Create the Cursor API key secret in K8s
+
+```bash
+bash scripts/setup-cursor.sh
+```
+
+Or manually:
+
+```bash
+kubectl create secret generic cursor-api-key \
+  --namespace agent-system \
+  --from-literal=api-key=your-cursor-api-key
+```
+
+### 7. Upload skill packs to S3
+
+```bash
+aws s3 sync skills/ s3://dev-agent-skills-<ACCOUNT>/
+```
+
+### 8. Configure the web client
+
+Set the API Gateway URL in the web client:
+
+```javascript
+localStorage.setItem("apiBase", "https://your-api-id.execute-api.region.amazonaws.com/prod");
+localStorage.setItem("wsUrl", "wss://your-ws-id.execute-api.region.amazonaws.com/dev");
+```
+
+## Usage
+
+### Voice command
+
+1. Open `client/web/index.html` on your phone
+2. Tap the microphone button
+3. Speak: "Build a login page with social authentication"
+4. Watch the task log for progress
+
+### Text command
+
+Type a command in the text input and press Send.
+
+### API
+
+```bash
+curl -X POST https://YOUR_API/voice-command \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Refactor the auth module and add tests"}'
+```
+
+### Direct K8s pipeline
+
+```yaml
+kubectl apply -f - <<EOF
+apiVersion: agents.robots.io/v1alpha1
+kind: AgentPipeline
+metadata:
+  name: my-pipeline
+  namespace: agent-system
+spec:
+  taskId: "manual-001"
+  prompt: "Add dark mode support to the settings page"
+  repo: "https://github.com/org/repo.git"
+  requiresApproval: true
+  stages:
+    - name: design
+      parallel: true
+      agents:
+        - type: ux-designer
+        - type: graphics-designer
+    - name: coding
+      agents:
+        - type: coding
+    - name: validation
+      agents:
+        - type: testing
+EOF
+```
+
+## Adding a New Agent Type
+
+Adding a specialist agent (e.g., a Database Migration Agent) requires **zero code changes**:
+
+### 1. Create a skill pack
+
+```
+skills/db-migration/
+├── system-prompt.md      # Agent persona, expertise, output format
+├── constraints.json      # Guardrails (max tokens, timeouts, forbidden actions)
+├── cursor-rules.md       # Injected into .cursor/rules/ for Cursor CLI
+└── mcp-config.json       # Optional: MCP servers the agent needs
+```
+
+### 2. Register in the agent registry
+
+Add an entry to `skills/registry.yaml`:
+
+```yaml
+  - type: db-migration
+    displayName: Database Migration Specialist
+    category: coding
+    skillPack: db-migration
+    resources:
+      memory: "2Gi"
+      cpu: "1"
+    cursorFlags: ["--force", "--trust", "--output-format", "stream-json"]
+```
+
+### 3. Sync and use
+
+```bash
+aws s3 sync skills/ s3://dev-agent-skills-<ACCOUNT>/
+```
+
+The new agent is immediately available for use in pipeline stages.
+
+## How It Works
+
+### Agent Specialisation via Cursor Rules
+
+Each agent runs the same base container image. Specialisation happens through **Cursor rules files** injected into the workspace before Cursor CLI runs:
+
+1. Agent runtime loads the skill pack from S3
+2. Clones the target repo (authenticated via GitHub PAT) to `/workspace`
+3. Configures git identity (user name, email, credential helper)
+4. Writes `cursor-rules.md` to `/workspace/.cursor/rules/agent.md`
+5. Writes `mcp-config.json` to `/workspace/.cursor/mcp.json` (if present)
+6. Runs `cursor-agent -p --force --trust --output-format stream-json "<prompt>"`
+7. Streams output, detects risky actions
+8. Commits and pushes changes to a branch (`agent/<pipeline>/<agent-type>`)
+9. Reports results (including commit SHA) to S3 and DynamoDB
+
+### Operator Pipeline Flow
+
+1. **AgentPipeline** created (via API or kubectl)
+2. **PipelineController** sets phase to Running, creates AgentTasks for the first stage
+3. **TaskController** creates a K8s Job per AgentTask with the base agent container
+4. Jobs run Cursor CLI headless with injected skill packs
+5. On completion, PipelineController advances to the next stage
+6. When all stages complete, pipeline is marked Completed
+
+### Safety Controls
+
+- Risky action detection (git push, file deletion, dependency installs)
+- Approval workflow (pipeline pauses, notifies user)
+- Sensitive file protection (.env, credentials, keys)
+- Sandbox mode (each agent gets an isolated workspace)
+
+## Development
+
+```bash
+# Build TypeScript packages
+npm run build
+
+# Build the operator
+cd operator && make build
+
+# Run operator locally (with kubeconfig)
+cd operator && make run
+
+# Type-check everything
+npx tsc --noEmit -p packages/shared/tsconfig.json
+npx tsc --noEmit -p packages/services/tsconfig.json
+npx tsc --noEmit -p packages/api/tsconfig.json
+npx tsc --noEmit -p agent-runtime/tsconfig.json
+npx tsc --noEmit -p infra/tsconfig.json
+```
+
+## Licence
+
+Apache 2.0

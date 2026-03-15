@@ -1,0 +1,26 @@
+[
+  {
+    "name": "create_test_file",
+    "description": "Create a test file in the project workspace",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "description": "Relative test file path" },
+        "content": { "type": "string", "description": "Test file content" }
+      },
+      "required": ["path", "content"]
+    }
+  },
+  {
+    "name": "run_tests",
+    "description": "Execute test commands and return results",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "command": { "type": "string", "description": "Test command to execute" },
+        "timeout": { "type": "number", "description": "Timeout in seconds" }
+      },
+      "required": ["command"]
+    }
+  }
+]

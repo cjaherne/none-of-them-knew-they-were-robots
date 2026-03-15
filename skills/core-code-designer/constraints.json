@@ -1,0 +1,6 @@
+{
+  "maxTokens": 4096,
+  "forbiddenActions": ["write_code", "run_commands"],
+  "requiredOutputFields": ["architecture", "dataModels", "apiDesign", "fileStructure"],
+  "timeoutMs": 60000
+}

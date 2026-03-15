@@ -1,0 +1,87 @@
+categories:
+  - name: analysis
+    order: 1
+    description: Agents that examine existing code and identify issues
+
+  - name: design
+    order: 2
+    description: Agents that produce specifications and design artifacts
+
+  - name: coding
+    order: 3
+    description: Agents that write and modify code
+
+  - name: validation
+    order: 4
+    description: Agents that verify quality through testing and review
+
+agents:
+  - type: bigboss
+    displayName: BigBoss Orchestrator
+    category: analysis
+    skillPack: bigboss
+    resources:
+      memory: "1Gi"
+      cpu: "500m"
+    cursorFlags: ["--trust", "--output-format", "stream-json"]
+
+  - type: ux-designer
+    displayName: UX Designer
+    category: design
+    skillPack: ux-designer
+    resources:
+      memory: "2Gi"
+      cpu: "1"
+    cursorFlags: ["--force", "--trust", "--output-format", "stream-json"]
+
+  - type: core-code-designer
+    displayName: Core Code Designer
+    category: design
+    skillPack: core-code-designer
+    resources:
+      memory: "2Gi"
+      cpu: "1"
+    cursorFlags: ["--force", "--trust", "--output-format", "stream-json"]
+
+  - type: graphics-designer
+    displayName: Graphics Designer
+    category: design
+    skillPack: graphics-designer
+    resources:
+      memory: "2Gi"
+      cpu: "1"
+    cursorFlags: ["--force", "--trust", "--output-format", "stream-json"]
+
+  - type: coding
+    displayName: Coding Agent
+    category: coding
+    skillPack: coding
+    resources:
+      memory: "4Gi"
+      cpu: "2"
+    cursorFlags: ["--force", "--trust", "--output-format", "stream-json"]
+
+  - type: testing
+    displayName: Testing Agent
+    category: validation
+    skillPack: testing
+    resources:
+      memory: "4Gi"
+      cpu: "2"
+    cursorFlags: ["--force", "--trust", "--output-format", "stream-json"]
+
+  # To add a new specialist agent:
+  # 1. Add an entry here
+  # 2. Create a skill pack directory in skills/<skillPack>/
+  #    with system-prompt.md, constraints.json, cursor-rules.md
+  # 3. Redeploy -- no code changes needed
+  #
+  # Example:
+  # - type: db-migration
+  #   displayName: Database Migration Specialist
+  #   category: coding
+  #   skillPack: db-migration
+  #   resources:
+  #     memory: "2Gi"
+  #     cpu: "1"
+  #   cursorFlags: ["--force", "--trust", "--output-format", "stream-json"]
