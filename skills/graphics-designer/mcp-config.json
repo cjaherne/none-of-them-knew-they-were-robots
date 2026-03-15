@@ -3,10 +3,6 @@
     "filesystem": {
       "command": "mcp-server-filesystem",
       "args": ["/workspace"]
-    },
-    "playwright": {
-      "command": "npx",
-      "args": ["@playwright/mcp@latest"]
     }
   }
 }

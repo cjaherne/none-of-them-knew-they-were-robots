@@ -22,6 +22,16 @@ RUN curl -fsSL https://www.cursor.com/api/download?platform=linux-x64-cli -o /tm
     && chmod +x /usr/local/bin/cursor-agent \
     || echo "WARN: Cursor CLI install skipped -- update URL for production builds"
 
+# Pre-install MCP server packages so agents don't download on every run
+RUN npm install -g \
+    @modelcontextprotocol/server-filesystem \
+    @modelcontextprotocol/server-github \
+    @playwright/mcp \
+    playwright
+
+# Install Chromium for Playwright-based agents (UX Designer, Testing Agent)
+RUN npx playwright install --with-deps chromium
+
 WORKDIR /app
 
 COPY --from=builder /build/dist/ dist/

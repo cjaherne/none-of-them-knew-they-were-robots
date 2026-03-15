@@ -17,11 +17,18 @@ export interface AgentConfig {
   gitUserEmail: string;
 }
 
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters?: Record<string, unknown>;
+}
+
 export interface SkillPack {
   systemPrompt: string;
   constraints: AgentConstraints;
-  cursorRules?: string;
+  cursorRules?: Record<string, string>;
   mcpConfig?: Record<string, unknown>;
+  tools?: ToolDefinition[];
 }
 
 export interface AgentConstraints {

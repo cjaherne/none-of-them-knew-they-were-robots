@@ -1,9 +1,11 @@
-import { AgentConfig, AgentResult } from "./types";
+import { AgentConfig, AgentResult, SkillPack, AgentConstraints, CursorStreamEvent } from "./types";
 import { loadSkillPack } from "./skill-loader";
 import { setupWorkspace, collectModifiedFiles, commitAndPush } from "./workspace";
-import { runCursor } from "./cursor-runner";
+import { runCursor, CursorRunOptions, CursorRunResult } from "./cursor-runner";
 import { assessOutputRisks } from "./risk-detector";
 import { reportResult } from "./result-reporter";
+
+const MAX_CONSTRAINT_RETRIES = 1;
 
 export async function executeAgentLifecycle(config: AgentConfig): Promise<AgentResult> {
   const startTime = Date.now();
@@ -22,12 +24,11 @@ export async function executeAgentLifecycle(config: AgentConfig): Promise<AgentR
     console.log(`[${config.agentType}] Setting up workspace`);
     const workDir = await setupWorkspace(config, skillPack);
 
-    // 3. Build the full prompt with system context
-    const fullPrompt = buildFullPrompt(config, skillPack.systemPrompt);
+    // 3. Build the full prompt with system context, tool hints, and constraints
+    const fullPrompt = buildFullPrompt(config, skillPack);
 
-    // 4. Run Cursor CLI headless
-    console.log(`[${config.agentType}] Running Cursor CLI`);
-    const cursorResult = await runCursor({
+    // 4. Run Cursor CLI headless (with constraint-based retry)
+    const runOptions: CursorRunOptions = {
       prompt: fullPrompt,
       workDir,
       flags: config.cursorFlags,
@@ -38,7 +39,11 @@ export async function executeAgentLifecycle(config: AgentConfig): Promise<AgentR
           process.stdout.write(event.content);
         }
       },
-    });
+    };
+
+    let cursorResult = await runCursorWithRetry(
+      config, runOptions, skillPack.constraints
+    );
 
     if (cursorResult.exitCode !== 0) {
       errors.push(`Cursor CLI exited with code ${cursorResult.exitCode}`);
@@ -47,8 +52,16 @@ export async function executeAgentLifecycle(config: AgentConfig): Promise<AgentR
       }
     }
 
-    // 5. Check for risky actions
+    // 5. Check for risky actions + forbidden actions
     const riskAssessment = assessOutputRisks(cursorResult.events);
+    const forbiddenViolations = checkForbiddenActions(
+      cursorResult.events, skillPack.constraints.forbiddenActions
+    );
+    if (forbiddenViolations.length > 0) {
+      for (const v of forbiddenViolations) {
+        errors.push(`Forbidden action: ${v}`);
+      }
+    }
     if (riskAssessment.isRisky) {
       console.log(`[${config.agentType}] Risks detected:`,
         riskAssessment.risks.map((r) => r.description).join(", ")
@@ -121,15 +134,33 @@ export async function executeAgentLifecycle(config: AgentConfig): Promise<AgentR
 
 function buildFullPrompt(
   config: AgentConfig,
-  systemPrompt: string
+  skillPack: SkillPack
 ): string {
   const parts: string[] = [];
 
+  parts.push(skillPack.systemPrompt);
+  parts.push("");
+  parts.push("---");
+  parts.push("");
+  parts.push("## Task");
   parts.push(config.prompt);
+
+  if (skillPack.tools && skillPack.tools.length > 0) {
+    parts.push("");
+    parts.push("## Preferred tools");
+    for (const tool of skillPack.tools) {
+      parts.push(`- **${tool.name}**: ${tool.description}`);
+    }
+  }
+
+  if (skillPack.constraints.maxTokens > 0) {
+    parts.push("");
+    parts.push(`Keep your response under ${skillPack.constraints.maxTokens} tokens.`);
+  }
 
   if (Object.keys(config.context).length > 0) {
     parts.push("");
-    parts.push("Additional context:");
+    parts.push("## Additional context");
     for (const [key, value] of Object.entries(config.context)) {
       parts.push(`- ${key}: ${value}`);
     }
@@ -137,9 +168,75 @@ function buildFullPrompt(
 
   if (config.upstreamRefs.length > 0) {
     parts.push("");
+    parts.push("## Upstream results");
     parts.push(`Upstream agent results are available in S3 bucket "${config.skillsBucket}" under results/${config.pipelineRef}/`);
     parts.push(`Upstream task refs: ${config.upstreamRefs.join(", ")}`);
   }
 
   return parts.join("\n");
+}
+
+async function runCursorWithRetry(
+  config: AgentConfig,
+  options: CursorRunOptions,
+  constraints: AgentConstraints
+): Promise<CursorRunResult> {
+  let result = await runCursor(options);
+
+  if (constraints.requiredOutputFields.length === 0) {
+    return result;
+  }
+
+  const missing = findMissingOutputFields(result, constraints.requiredOutputFields);
+  if (missing.length === 0) {
+    return result;
+  }
+
+  for (let retry = 0; retry < MAX_CONSTRAINT_RETRIES; retry++) {
+    console.log(
+      `[${config.agentType}] Missing required output fields: ${missing.join(", ")}. Retrying (${retry + 1}/${MAX_CONSTRAINT_RETRIES})...`
+    );
+    const retryPrompt =
+      `${options.prompt}\n\nIMPORTANT: Your previous response was missing these required fields: ${missing.join(", ")}. You MUST include all of them in your output.`;
+    const retryResult = await runCursor({ ...options, prompt: retryPrompt });
+    const stillMissing = findMissingOutputFields(retryResult, constraints.requiredOutputFields);
+    if (stillMissing.length === 0) {
+      return retryResult;
+    }
+    result = retryResult;
+  }
+
+  console.warn(
+    `[${config.agentType}] Still missing required output fields after retries: ${missing.join(", ")}`
+  );
+  return result;
+}
+
+function findMissingOutputFields(
+  result: CursorRunResult,
+  requiredFields: string[]
+): string[] {
+  if (requiredFields.length === 0) return [];
+  const output = result.stdout.toLowerCase();
+  return requiredFields.filter(
+    (field) => !output.includes(field.toLowerCase())
+  );
+}
+
+function checkForbiddenActions(
+  events: CursorStreamEvent[],
+  forbiddenActions: string[]
+): string[] {
+  if (forbiddenActions.length === 0) return [];
+  const violations: string[] = [];
+  for (const event of events) {
+    if (!event.tool_call) continue;
+    const toolName = event.tool_call.name.toLowerCase();
+    for (const forbidden of forbiddenActions) {
+      if (toolName.includes(forbidden.toLowerCase())) {
+        violations.push(`${event.tool_call.name} matches forbidden action "${forbidden}"`);
+      }
+    }
+  }
+  return violations;
 }
