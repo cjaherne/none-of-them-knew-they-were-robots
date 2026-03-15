@@ -1,0 +1,38 @@
+[
+  {
+    "name": "create_file",
+    "description": "Create a new file in the project workspace",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "description": "Relative file path" },
+        "content": { "type": "string", "description": "File content" }
+      },
+      "required": ["path", "content"]
+    }
+  },
+  {
+    "name": "modify_file",
+    "description": "Modify an existing file in the project workspace",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "description": "Relative file path" },
+        "content": { "type": "string", "description": "New file content" }
+      },
+      "required": ["path", "content"]
+    }
+  },
+  {
+    "name": "run_command",
+    "description": "Run a shell command in the workspace",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "command": { "type": "string", "description": "Shell command to execute" },
+        "requiresApproval": { "type": "boolean", "description": "Whether this command needs user approval" }
+      },
+      "required": ["command"]
+    }
+  }
+]

@@ -1,0 +1,6 @@
+{
+  "maxTokens": 2048,
+  "forbiddenActions": [],
+  "requiredOutputFields": ["agents", "executionMode"],
+  "timeoutMs": 30000
+}

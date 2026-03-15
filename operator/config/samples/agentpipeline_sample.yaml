@@ -1,0 +1,26 @@
+apiVersion: agents.robots.io/v1alpha1
+kind: AgentPipeline
+metadata:
+  name: pipeline-sample
+  namespace: agent-system
+spec:
+  taskId: "sample-task-001"
+  prompt: "Build a login page with Google and GitHub social authentication"
+  repo: "https://github.com/example/my-app.git"
+  requiresApproval: true
+  stages:
+    - name: design
+      parallel: true
+      agents:
+        - type: ux-designer
+          context:
+            focus: "login flow and social auth UX"
+        - type: core-code-designer
+          context:
+            focus: "OAuth2 architecture and API design"
+    - name: coding
+      agents:
+        - type: coding
+    - name: validation
+      agents:
+        - type: testing

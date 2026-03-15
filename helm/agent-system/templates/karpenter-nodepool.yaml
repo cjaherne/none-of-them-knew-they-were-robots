@@ -1,0 +1,49 @@
+{{- if .Values.karpenter.enabled }}
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: {{ .Values.karpenter.nodePoolName }}
+  labels:
+    {{- include "agent-system.labels" . | nindent 4 }}
+spec:
+  template:
+    metadata:
+      labels:
+        workload-type: agent
+    spec:
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values:
+            {{- toYaml .Values.karpenter.capacityTypes | nindent 12 }}
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values:
+            {{- toYaml .Values.karpenter.instanceTypes | nindent 12 }}
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: agent-nodes
+  limits:
+    cpu: {{ mul .Values.karpenter.maxNodes 4 }}
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 30s
+---
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: agent-nodes
+  labels:
+    {{- include "agent-system.labels" . | nindent 4 }}
+spec:
+  amiSelectorTerms:
+    - alias: bottlerocket@latest
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: {{ .Values.namespace }}
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: {{ .Values.namespace }}
+  role: KarpenterNodeRole
+{{- end }}

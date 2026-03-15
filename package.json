@@ -1,0 +1,24 @@
+{
+  "name": "none-of-them-knew-they-were-robots",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Voice-controlled multi-agent AI design and development team on AWS serverless",
+  "workspaces": [
+    "packages/shared",
+    "packages/services",
+    "packages/api",
+    "agent-runtime",
+    "infra"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "clean": "npm run clean --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "synth": "npm run synth --workspace=infra",
+    "deploy": "npm run deploy --workspace=infra"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

@@ -1,0 +1,43 @@
+namespace: agent-system
+
+operator:
+  image: ""  # Set to your ECR URI, e.g. 123456789.dkr.ecr.us-east-1.amazonaws.com/agent-operator:latest
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+agentRuntime:
+  image: ""  # Set to your ECR URI, e.g. 123456789.dkr.ecr.us-east-1.amazonaws.com/agent-runtime:latest
+
+aws:
+  region: us-east-1
+  skillsBucket: ""
+  resultsTable: ""
+  serviceAccountRoleArn: ""  # IAM role ARN for IRSA
+
+cursorApiKey:
+  secretName: cursor-api-key
+  secretKey: api-key
+
+github:
+  secretName: github-credentials
+
+karpenter:
+  enabled: true
+  nodePoolName: agent-workloads
+  instanceTypes:
+    - m7i-flex.large
+    - m7i-flex.xlarge
+    - c7i.large
+    - c7i.xlarge
+  capacityTypes:
+    - spot
+    - on-demand
+  maxNodes: 10
+
+keda:
+  enabled: false
