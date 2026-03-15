@@ -31,12 +31,12 @@ export async function setupWorkspace(
 
   configureGitIdentity(workDir, git);
 
-  if (skillPack.cursorRules) {
+  if (skillPack.cursorRules && Object.keys(skillPack.cursorRules).length > 0) {
     await injectCursorRules(workDir, skillPack.cursorRules);
   }
 
   if (skillPack.mcpConfig) {
-    await injectMcpConfig(workDir, skillPack.mcpConfig);
+    await injectMcpConfig(workDir, resolveEnvVars(skillPack.mcpConfig));
   }
 
   return workDir;
@@ -90,15 +90,13 @@ function configureGitIdentity(workDir: string, git: GitIdentity): void {
 
 async function injectCursorRules(
   workDir: string,
-  cursorRules: string
+  cursorRules: Record<string, string>
 ): Promise<void> {
   const rulesDir = path.join(workDir, ".cursor", "rules");
   await fs.mkdir(rulesDir, { recursive: true });
-  await fs.writeFile(
-    path.join(rulesDir, "agent.md"),
-    cursorRules,
-    "utf-8"
-  );
+  for (const [filename, content] of Object.entries(cursorRules)) {
+    await fs.writeFile(path.join(rulesDir, filename), content, "utf-8");
+  }
 }
 
 async function injectMcpConfig(
@@ -112,6 +110,15 @@ async function injectMcpConfig(
     JSON.stringify(mcpConfig, null, 2),
     "utf-8"
   );
+}
+
+function resolveEnvVars(obj: Record<string, unknown>): Record<string, unknown> {
+  const json = JSON.stringify(obj);
+  const resolved = json.replace(
+    /\$\{([A-Z_][A-Z0-9_]*)\}/g,
+    (_, name) => process.env[name] || ""
+  );
+  return JSON.parse(resolved);
 }
 
 export async function collectModifiedFiles(workDir: string): Promise<string[]> {

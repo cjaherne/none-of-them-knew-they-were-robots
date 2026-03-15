@@ -10,12 +10,14 @@ Speak a task into your phone, and a team of specialist AI agents -- designers, c
 
 Agents are organised into categories that define their pipeline position:
 
-| Category | Agents | Role |
-|----------|--------|------|
-| **Analysis** | BigBoss | Analyses tasks, plans agent pipelines |
-| **Design** | UX Designer, Core Code Designer, Graphics Designer | Produce specifications |
-| **Coding** | Coding Agent | Implements code using Cursor CLI |
-| **Validation** | Testing Agent | Writes and runs tests |
+| Category | Agents | Role | MCP Tools |
+|----------|--------|------|-----------|
+| **Analysis** | BigBoss | Analyses tasks, plans agent pipelines | Filesystem, GitHub |
+| **Design** | UX Designer | User flows, wireframes, accessibility | Filesystem, Playwright |
+| **Design** | Core Code Designer | Architecture, data models, API contracts | Filesystem, GitHub |
+| **Design** | Graphics Designer | Color palettes, typography, CSS tokens | Filesystem |
+| **Coding** | Coding Agent | Implements code from design specs | Filesystem, GitHub |
+| **Validation** | Testing Agent | Unit tests, integration tests, E2E | Filesystem, Playwright |
 
 New specialist agents can be added by creating a skill pack directory and a registry entry -- no code changes needed.
 
@@ -271,8 +273,13 @@ Adding a specialist agent (e.g., a Database Migration Agent) requires **zero cod
 skills/db-migration/
 ├── system-prompt.md      # Agent persona, expertise, output format
 ├── constraints.json      # Guardrails (max tokens, timeouts, forbidden actions)
-├── cursor-rules.md       # Injected into .cursor/rules/ for Cursor CLI
-└── mcp-config.json       # Optional: MCP servers the agent needs
+├── mcp-config.json       # MCP servers the agent needs (use ${ENV_VAR} for secrets)
+├── tools.json            # Optional: tool preference descriptions
+└── rules/                # Cursor rules (multi-file, injected into .cursor/rules/)
+    ├── role.md           # Agent role and behaviour constraints
+    ├── output-format.md  # Expected output structure with examples
+    ├── examples.md       # 2-3 few-shot input/output examples
+    └── checklist.md      # Domain-specific quality checklist
 ```
 
 ### 2. Register in the agent registry
@@ -300,19 +307,30 @@ The new agent is immediately available for use in pipeline stages.
 
 ## How It Works
 
-### Agent Specialisation via Cursor Rules
+### Agent Specialisation
 
-Each agent runs the same base container image. Specialisation happens through **Cursor rules files** injected into the workspace before Cursor CLI runs:
+Each agent runs the same base container image. Specialisation happens through multiple complementary mechanisms:
 
-1. Agent runtime loads the skill pack from S3
-2. Clones the target repo (authenticated via GitHub PAT) to `/workspace`
-3. Configures git identity (user name, email, credential helper)
-4. Writes `cursor-rules.md` to `/workspace/.cursor/rules/agent.md`
-5. Writes `mcp-config.json` to `/workspace/.cursor/mcp.json` (if present)
-6. Runs `cursor-agent -p --force --trust --output-format stream-json "<prompt>"`
-7. Streams output, detects risky actions
-8. Commits and pushes changes to a branch (`agent/<pipeline>/<agent-type>`)
-9. Reports results (including commit SHA) to S3 and DynamoDB
+| Layer | What it does | Example |
+|-------|-------------|---------|
+| **System prompt** | Defines the agent's persona, expertise, and output format | "You are a senior UX designer..." |
+| **Cursor rules** | Multi-file rules injected into `.cursor/rules/` with role, output format, few-shot examples, and domain checklists | `rules/role.md`, `rules/examples.md` |
+| **MCP servers** | Per-agent external tools (GitHub API, Playwright browser, filesystem) | UX Designer gets Playwright for screenshots |
+| **Tool preferences** | `tools.json` describing which tools the agent should favour | Coding agent: create_file, modify_file |
+| **Constraints** | Enforced guardrails: forbidden actions, required output fields (with retry), timeouts | Designers forbidden from writing code |
+
+The agent lifecycle:
+
+1. Load skill pack from S3 (system prompt, rules, constraints, MCP config, tools)
+2. Clone the target repo (authenticated via GitHub PAT) to `/workspace`
+3. Configure git identity (user name, email, credential helper)
+4. Write cursor rules files to `/workspace/.cursor/rules/` (multiple `.md` files)
+5. Write MCP config to `/workspace/.cursor/mcp.json` (with env var templating for secrets)
+6. Build prompt: system prompt + task + tool hints + constraint hints + upstream context
+7. Run `cursor-agent -p --force --trust --output-format stream-json "<prompt>"`
+8. Validate output: check forbidden actions, verify required fields (retry once if missing)
+9. Commit and push changes to a branch (`agent/<pipeline>/<agent-type>`)
+10. Report results (including commit SHA) to S3 and DynamoDB
 
 ### Operator Pipeline Flow
 
@@ -326,6 +344,8 @@ Each agent runs the same base container image. Specialisation happens through **
 ### Safety Controls
 
 - Risky action detection (git push, file deletion, dependency installs)
+- Forbidden action enforcement per agent (`constraints.json`)
+- Required output field validation with automatic retry
 - Approval workflow (pipeline pauses, notifies user)
 - Sensitive file protection (.env, credentials, keys)
 - Sandbox mode (each agent gets an isolated workspace)
