@@ -53,11 +53,7 @@ export async function handler(
       stages: [
         {
           name: "design",
-          parallel: true,
-          agents: [
-            { type: "ux-designer" },
-            { type: "core-code-designer" },
-          ],
+          agents: [{ type: "core-code-designer" }],
         },
         {
           name: "coding",

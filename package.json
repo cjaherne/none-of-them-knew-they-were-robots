@@ -8,7 +8,8 @@
     "packages/services",
     "packages/api",
     "agent-runtime",
-    "infra"
+    "infra",
+    "test-harness"
   ],
   "scripts": {
     "build": "npm run build --workspaces",
