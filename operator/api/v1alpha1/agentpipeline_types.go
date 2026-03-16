@@ -4,6 +4,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// +kubebuilder:object:generate=true
 // PipelineStageAgent defines an agent to run within a pipeline stage.
 type PipelineStageAgent struct {
 	// Type is the agent type from the registry (e.g. "ux-designer", "coding").
@@ -14,6 +15,7 @@ type PipelineStageAgent struct {
 	Context map[string]string `json:"context,omitempty"`
 }
 
+// +kubebuilder:object:generate=true
 // PipelineStage defines a stage in the agent pipeline.
 type PipelineStage struct {
 	// Name identifies this stage (e.g. "design", "coding", "validation").
@@ -27,6 +29,7 @@ type PipelineStage struct {
 	Agents []PipelineStageAgent `json:"agents"`
 }
 
+// +kubebuilder:object:generate=true
 // AgentPipelineSpec defines the desired state of an AgentPipeline.
 type AgentPipelineSpec struct {
 	// TaskId links this pipeline to a task in DynamoDB.
@@ -59,6 +62,7 @@ const (
 	PipelinePhaseFailed           PipelinePhase = "Failed"
 )
 
+// +kubebuilder:object:generate=true
 // AgentPipelineStatus defines the observed state of an AgentPipeline.
 type AgentPipelineStatus struct {
 	// Phase is the current pipeline lifecycle phase.

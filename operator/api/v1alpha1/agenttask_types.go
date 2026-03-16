@@ -5,6 +5,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// +kubebuilder:object:generate=true
 // AgentTaskSpec defines the desired state of an AgentTask.
 type AgentTaskSpec struct {
 	// PipelineRef is the name of the parent AgentPipeline.
@@ -55,6 +56,7 @@ const (
 	AgentTaskPhaseFailed           AgentTaskPhase = "Failed"
 )
 
+// +kubebuilder:object:generate=true
 // AgentTaskStatus defines the observed state of an AgentTask.
 type AgentTaskStatus struct {
 	// Phase is the current task lifecycle phase.

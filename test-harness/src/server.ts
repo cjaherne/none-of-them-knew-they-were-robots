@@ -4,8 +4,18 @@ import { config as loadEnv } from "dotenv";
 loadEnv({ path: path.resolve(__dirname, "..", ".env.local") });
 
 import express from "express";
+import { createLogger, addGlobalTransport, setGlobalLogLevel, getGlobalLogLevel } from "@agents/shared";
+import type { LogLevel, LogEntry } from "@agents/shared";
+import { SqliteTransport, getLogs, getTaskHistory, getTaskById, getLogsForTask } from "./log-store";
+import type { LogTransport } from "@agents/shared";
 import { taskStore } from "./local-task-store";
 import { runPipeline } from "./local-orchestrator";
+
+addGlobalTransport(new SqliteTransport());
+if (process.env.LOG_LEVEL) {
+  setGlobalLogLevel(process.env.LOG_LEVEL.toUpperCase() as LogLevel);
+}
+const log = createLogger("server");
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const app = express();
@@ -39,9 +49,9 @@ app.post("/voice-command", async (req, res) => {
       try {
         transcript = await transcribeWithWhisper(audioBase64);
         prompt = transcript;
-        console.log(`[whisper] Transcribed: "${transcript}"`);
+        log.info(`Whisper transcribed: "${transcript}"`, undefined, "input");
       } catch (err) {
-        console.error("Whisper transcription failed:", err);
+        log.error("Whisper transcription failed", { err: String(err) }, "error");
         res.status(500).json({ error: "Transcription failed. Check your OPENAI_API_KEY." });
         return;
       }
@@ -57,14 +67,16 @@ app.post("/voice-command", async (req, res) => {
         const parsed = await parseIntentWithOpenAI(prompt);
         prompt = parsed.prompt;
       } catch (err) {
-        console.warn("Intent parsing failed, using raw text:", err);
+        log.warn("Intent parsing failed, using raw text", { err: String(err) });
       }
     }
 
     const task = taskStore.createTask(prompt, { repo, workspace, baseBranch, branch, pipelineMode, requireApproval: !!requireApproval });
 
+    log.info(`Task received: ${prompt.slice(0, 120)}`, { taskId: task.id }, "input");
+
     runPipeline(task).catch((err) => {
-      console.error(`Pipeline error for task ${task.id}:`, err);
+      log.error(`Pipeline error for task ${task.id}`, { err: String(err), taskId: task.id }, "error");
     });
 
     res.status(201).json({
@@ -73,7 +85,7 @@ app.post("/voice-command", async (req, res) => {
       transcript,
     });
   } catch (err) {
-    console.error("Voice command error:", err);
+    log.error("Voice command error", { err: String(err) }, "error");
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -103,6 +115,13 @@ app.post("/tasks/:id/cancel", (_req, res) => {
     return;
   }
   res.json({ ok: true, cancelled: true });
+});
+
+// --- GET /tasks/history (must be before :id param routes) ---
+app.get("/tasks/history", (req, res) => {
+  const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
+  const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0;
+  res.json(getTaskHistory(limit, offset));
 });
 
 // --- GET /tasks/:id ---
@@ -135,6 +154,9 @@ app.get("/tasks/:id/stream", (req, res) => {
     `data: ${JSON.stringify({ type: "snapshot", task })}\n\n`,
   );
 
+  if (!sseClients.has(task.id)) sseClients.set(task.id, new Set());
+  sseClients.get(task.id)!.add(res);
+
   const unsubscribe = taskStore.subscribe(task.id, (event) => {
     res.write(`data: ${JSON.stringify(event)}\n\n`);
 
@@ -149,7 +171,69 @@ app.get("/tasks/:id/stream", (req, res) => {
 
   req.on("close", () => {
     unsubscribe();
+    sseClients.get(task.id)?.delete(res);
   });
+});
+
+// --- SSE log broadcast transport ---
+const sseClients = new Map<string, Set<express.Response>>();
+
+class SseBroadcastTransport implements LogTransport {
+  write(entry: LogEntry): void {
+    if (!entry.taskId) return;
+    const clients = sseClients.get(entry.taskId);
+    if (!clients || clients.size === 0) return;
+    const data = JSON.stringify({ type: "log_entry", ...entry });
+    for (const res of clients) {
+      try { res.write(`data: ${data}\n\n`); } catch { /* client gone */ }
+    }
+  }
+}
+addGlobalTransport(new SseBroadcastTransport());
+
+// --- GET /logs ---
+app.get("/logs", (req, res) => {
+  const { taskId, level, category, limit, offset } = req.query;
+  const rows = getLogs({
+    taskId: taskId as string | undefined,
+    level: level as LogLevel | undefined,
+    category: category as any,
+    limit: limit ? parseInt(limit as string, 10) : undefined,
+    offset: offset ? parseInt(offset as string, 10) : undefined,
+  });
+  res.json(rows);
+});
+
+// --- GET /tasks/:id/detail ---
+app.get("/tasks/:id/detail", (req, res) => {
+  const task = getTaskById(req.params.id);
+  if (!task) {
+    res.status(404).json({ error: "Task not found" });
+    return;
+  }
+  const logs = getLogsForTask(req.params.id, {
+    level: req.query.level as LogLevel | undefined,
+    category: req.query.category as any,
+  });
+  res.json({ task, logs });
+});
+
+// --- POST /config/log-level ---
+app.post("/config/log-level", (req, res) => {
+  const { level } = req.body;
+  const valid: LogLevel[] = ["DEBUG", "INFO", "WARN", "ERROR"];
+  if (!level || !valid.includes(level)) {
+    res.status(400).json({ error: `Invalid level. Must be one of: ${valid.join(", ")}` });
+    return;
+  }
+  setGlobalLogLevel(level);
+  log.info(`Log level changed to ${level}`, undefined, "system");
+  res.json({ ok: true, level });
+});
+
+// --- GET /config/log-level ---
+app.get("/config/log-level", (_req, res) => {
+  res.json({ level: getGlobalLogLevel() });
 });
 
 // --- Whisper transcription (requires OPENAI_API_KEY) ---
@@ -197,12 +281,12 @@ async function parseIntentWithOpenAI(
 
 app.listen(PORT, () => {
   const hasKey = !!process.env.OPENAI_API_KEY;
-  console.log(`\n  MVP Test Harness running at http://localhost:${PORT}`);
-  console.log(`  Serving UI from ${webRoot}`);
-  console.log(`  OpenAI integration: ${hasKey ? "enabled (intent parsing + lightweight BigBoss)" : "disabled"}`);
+  log.info(`MVP Test Harness running at http://localhost:${PORT}`, {
+    webRoot,
+    openai: hasKey ? "enabled" : "disabled",
+    skillsRoot: process.env.SKILLS_ROOT || path.resolve(__dirname, "..", "..", "skills"),
+  }, "system");
   if (!hasKey) {
-    console.log(`  → Copy .env.local.example to .env.local and add OPENAI_API_KEY to enable`);
+    log.info("Copy .env.local.example to .env.local and add OPENAI_API_KEY to enable OpenAI", undefined, "system");
   }
-  console.log(`  Skills root: ${process.env.SKILLS_ROOT || path.resolve(__dirname, "..", "..", "skills")}`);
-  console.log(`  Agent debug logs: ${path.join(require("os").tmpdir(), "agent-mvp-logs")}\n`);
 });

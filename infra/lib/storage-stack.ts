@@ -13,6 +13,7 @@ export class StorageStack extends cdk.Stack {
   public readonly approvalsTable: dynamodb.Table;
   public readonly agentResultsTable: dynamodb.Table;
   public readonly connectionsTable: dynamodb.Table;
+  public readonly logsTable: dynamodb.Table;
   public readonly skillsBucket: s3.Bucket;
   public readonly audioBucket: s3.Bucket;
   public readonly taskQueue: sqs.Queue;
@@ -52,6 +53,24 @@ export class StorageStack extends cdk.Stack {
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       timeToLiveAttribute: "ttl",
+    });
+    this.connectionsTable.addGlobalSecondaryIndex({
+      indexName: "taskId-index",
+      partitionKey: { name: "taskId", type: dynamodb.AttributeType.STRING },
+    });
+
+    this.logsTable = new dynamodb.Table(this, "LogsTable", {
+      tableName: `${props.stage}-logs`,
+      partitionKey: { name: "taskId", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "timestamp", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      stream: dynamodb.StreamViewType.NEW_IMAGE,
+    });
+    this.logsTable.addGlobalSecondaryIndex({
+      indexName: "level-index",
+      partitionKey: { name: "level", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "timestamp", type: dynamodb.AttributeType.STRING },
     });
 
     this.skillsBucket = new s3.Bucket(this, "SkillsBucket", {

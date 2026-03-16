@@ -3,6 +3,7 @@ import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
 import * as apigatewayv2Integrations from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as lambdaNode from "aws-cdk-lib/aws-lambda-nodejs";
+import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import { Construct } from "constructs";
 import * as path from "path";
@@ -10,6 +11,7 @@ import * as path from "path";
 interface WebSocketStackProps extends cdk.StackProps {
   stage: string;
   connectionsTable: dynamodb.Table;
+  logsTable?: dynamodb.Table;
 }
 
 export class WebSocketStack extends cdk.Stack {
@@ -70,5 +72,37 @@ export class WebSocketStack extends cdk.Stack {
       value: wsStage.url,
       description: "WebSocket API URL",
     });
+
+    if (props.logsTable) {
+      const logBroadcasterFn = new lambdaNode.NodejsFunction(this, "LogBroadcasterFn", {
+        entry: path.join(__dirname, "../../packages/api/src/log-broadcaster.ts"),
+        handler: "handler",
+        runtime: lambda.Runtime.NODEJS_20_X,
+        memorySize: 256,
+        timeout: cdk.Duration.seconds(30),
+        environment: {
+          ...commonEnv,
+          WS_ENDPOINT: `https://${this.wsApi.apiId}.execute-api.${this.region}.amazonaws.com/${props.stage}`,
+        },
+        bundling: { externalModules: ["@aws-sdk/*"] },
+      });
+
+      props.connectionsTable.grantReadData(logBroadcasterFn);
+      logBroadcasterFn.addToRolePolicy(
+        new cdk.aws_iam.PolicyStatement({
+          actions: ["execute-api:ManageConnections"],
+          resources: [`arn:aws:execute-api:${this.region}:${this.account}:${this.wsApi.apiId}/*`],
+        }),
+      );
+
+      logBroadcasterFn.addEventSource(
+        new lambdaEventSources.DynamoEventSource(props.logsTable, {
+          startingPosition: lambda.StartingPosition.LATEST,
+          batchSize: 25,
+          maxBatchingWindow: cdk.Duration.seconds(1),
+          retryAttempts: 2,
+        }),
+      );
+    }
   }
 }

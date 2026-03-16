@@ -165,4 +165,46 @@ class BackendAdapter {
       headers: { "Content-Type": "application/json" },
     });
   }
+
+  async getTaskHistory(limit = 50, offset = 0) {
+    const res = await fetch(`${this.baseUrl}/tasks/history?limit=${limit}&offset=${offset}`);
+    if (!res.ok) throw new Error("Failed to fetch task history");
+    return res.json();
+  }
+
+  async getTaskDetail(taskId) {
+    const res = await fetch(`${this.baseUrl}/tasks/${taskId}/detail`);
+    if (!res.ok) throw new Error("Failed to fetch task detail");
+    return res.json();
+  }
+
+  async setLogLevel(level) {
+    if (this.type !== "local") return;
+    const res = await fetch(`${this.baseUrl}/config/log-level`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ level }),
+    });
+    if (!res.ok) throw new Error("Failed to set log level");
+    return res.json();
+  }
+
+  async getLogLevel() {
+    if (this.type !== "local") return { level: "INFO" };
+    const res = await fetch(`${this.baseUrl}/config/log-level`);
+    if (!res.ok) return { level: "INFO" };
+    return res.json();
+  }
+
+  async getLogs(opts = {}) {
+    const params = new URLSearchParams();
+    if (opts.taskId) params.set("taskId", opts.taskId);
+    if (opts.level) params.set("level", opts.level);
+    if (opts.category) params.set("category", opts.category);
+    if (opts.limit) params.set("limit", String(opts.limit));
+    if (opts.offset) params.set("offset", String(opts.offset));
+    const res = await fetch(`${this.baseUrl}/logs?${params.toString()}`);
+    if (!res.ok) throw new Error("Failed to fetch logs");
+    return res.json();
+  }
 }

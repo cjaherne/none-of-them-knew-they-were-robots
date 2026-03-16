@@ -840,6 +840,184 @@
       opacity: 0.6;
     }
 
+    /* --- Tab bar --- */
+    .tab-bar {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 0.5rem;
+    }
+
+    .tab-bar button {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--text-dim);
+      font-family: var(--display);
+      font-size: 0.5625rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      padding: 0.5rem 1rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .tab-bar button:hover { color: var(--text-muted); }
+
+    .tab-bar button.active {
+      color: var(--cyan);
+      border-bottom-color: var(--cyan);
+    }
+
+    /* --- Log level badges --- */
+    .log-level-badge {
+      display: inline-block;
+      font-family: var(--mono);
+      font-size: 0.5rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 0.05rem 0.3rem;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
+
+    .log-level-badge.DEBUG { background: var(--surface-3); color: var(--text-dim); }
+    .log-level-badge.INFO { background: var(--cyan-dim); color: var(--cyan); }
+    .log-level-badge.WARN { background: var(--warning-dim); color: var(--warning); }
+    .log-level-badge.ERROR { background: var(--danger-dim); color: var(--danger); }
+
+    .log-source-tag {
+      font-family: var(--mono);
+      font-size: 0.5rem;
+      color: var(--magenta);
+      opacity: 0.7;
+      flex-shrink: 0;
+    }
+
+    .log-category-indicator {
+      font-family: var(--mono);
+      font-size: 0.5rem;
+      color: var(--accent);
+      opacity: 0.6;
+      flex-shrink: 0;
+    }
+
+    /* --- History view --- */
+    .history-view {
+      display: none;
+      flex-direction: column;
+      gap: 0.5rem;
+      flex: 1;
+    }
+
+    .history-view.visible { display: flex; }
+
+    .history-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.375rem;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .history-item {
+      padding: 0.5rem 0.625rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .history-item:hover {
+      border-color: var(--border-glow);
+      background: var(--surface-2);
+    }
+
+    .history-item .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .history-item .status-dot.completed { background: var(--success); }
+    .history-item .status-dot.failed { background: var(--danger); }
+    .history-item .status-dot.running { background: var(--cyan); }
+    .history-item .status-dot.queued { background: var(--text-dim); }
+    .history-item .status-dot.cancelled { background: var(--warning); }
+
+    .history-item .prompt-excerpt {
+      flex: 1;
+      font-size: 0.75rem;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .history-item .history-meta {
+      font-family: var(--mono);
+      font-size: 0.5625rem;
+      color: var(--text-dim);
+      flex-shrink: 0;
+    }
+
+    .history-detail {
+      display: none;
+      flex-direction: column;
+      gap: 0.5rem;
+      flex: 1;
+    }
+
+    .history-detail.visible { display: flex; }
+
+    .history-detail-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .history-back-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      border-radius: 4px;
+      padding: 0.2rem 0.5rem;
+      font-family: var(--mono);
+      font-size: 0.5625rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .history-back-btn:hover {
+      border-color: var(--cyan);
+      color: var(--cyan);
+    }
+
+    .history-detail-title {
+      font-size: 0.8125rem;
+      color: var(--text-bright);
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .history-detail-logs {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      flex: 1;
+      overflow-y: auto;
+      min-height: 200px;
+    }
+
     /* --- Scrollbar --- */
     ::-webkit-scrollbar { width: 4px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -1014,6 +1192,18 @@
           <input type="text" id="cloudWsUrl" placeholder="wss://xxx.execute-api.region.amazonaws.com/dev" />
         </div>
       </div>
+
+      <!-- Logging config -->
+      <div class="config-group backend-config">
+        <div class="sidebar-section-title">Logging</div>
+        <label for="logLevelSelect">Log Level</label>
+        <select id="logLevelSelect">
+          <option value="DEBUG">DEBUG</option>
+          <option value="INFO" selected>INFO</option>
+          <option value="WARN">WARN</option>
+          <option value="ERROR">ERROR</option>
+        </select>
+      </div>
     </aside>
 
     <!-- Main content -->
@@ -1035,6 +1225,12 @@
             <button class="send-btn" id="sendBtnMobile">Run</button>
           </div>
         </div>
+      </div>
+
+      <!-- Tab bar -->
+      <div class="tab-bar" id="tabBar">
+        <button class="active" data-tab="live" id="tabLive">Live</button>
+        <button data-tab="history" id="tabHistory">History</button>
       </div>
 
       <div class="status-bar" id="status"></div>
@@ -1069,9 +1265,21 @@
         <div class="stage-detail" id="stageDetail"></div>
       </div>
 
-      <!-- Event log -->
+      <!-- Event log (Live tab) -->
       <div class="task-log" id="taskLog">
         <h2>Event Log</h2>
+      </div>
+
+      <!-- History view (History tab) -->
+      <div class="history-view" id="historyView">
+        <div class="history-list" id="historyList"></div>
+        <div class="history-detail" id="historyDetail">
+          <div class="history-detail-header">
+            <button class="history-back-btn" id="historyBackBtn">&larr; Back</button>
+            <span class="history-detail-title" id="historyDetailTitle"></span>
+          </div>
+          <div class="history-detail-logs" id="historyDetailLogs"></div>
+        </div>
       </div>
     </main>
 

@@ -19,6 +19,9 @@ aws:
   resultsTable: ""
   serviceAccountRoleArn: ""  # IAM role ARN for IRSA
 
+logging:
+  logApiUrl: ""  # Set to your API Gateway URL for log ingestion, e.g. https://xxx.execute-api.region.amazonaws.com/dev
+
 cursorApiKey:
   secretName: cursor-api-key
   secretKey: api-key

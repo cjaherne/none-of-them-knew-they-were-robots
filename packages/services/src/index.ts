@@ -5,3 +5,4 @@ export * from "./tts";
 export * from "./approval";
 export * from "./task-store";
 export * from "./skill-loader";
+export * from "./log-store";

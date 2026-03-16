@@ -2,6 +2,7 @@ import { EventEmitter } from "events";
 import { v4 as uuid } from "uuid";
 import { TaskStatus } from "@agents/shared";
 import type { Task, TaskStreamEvent } from "@agents/shared";
+import { saveTaskHistory } from "./log-store";
 
 export interface StageStatus {
   name: string;
@@ -68,6 +69,7 @@ class TaskStore {
       stages: [],
     };
     this.tasks.set(task.id, task);
+    saveTaskHistory(task);
     this.emit(task.id, {
       taskId: task.id,
       type: "status_change",
@@ -102,6 +104,7 @@ class TaskStore {
     task.status = status;
     task.updatedAt = new Date().toISOString();
     if (error) task.error = error;
+    saveTaskHistory(task);
     this.emit(taskId, {
       taskId,
       type: "status_change",
@@ -122,6 +125,7 @@ class TaskStore {
     if (!stage) return;
     Object.assign(stage, update);
     task.updatedAt = new Date().toISOString();
+    saveTaskHistory(task);
     this.emit(taskId, {
       taskId,
       agent: stage.agent,

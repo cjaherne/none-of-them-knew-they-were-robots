@@ -29,8 +29,6 @@ type AgentPipelineReconciler struct {
 // +kubebuilder:rbac:groups=agents.robots.io,resources=agenttasks,verbs=get;list;watch;create;update;patch;delete
 
 func (r *AgentPipelineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
 	var pipeline agentsv1alpha1.AgentPipeline
 	if err := r.Get(ctx, req.NamespacedName, &pipeline); err != nil {
 		if errors.IsNotFound(err) {
@@ -71,12 +69,11 @@ func (r *AgentPipelineReconciler) handlePending(ctx context.Context, pipeline *a
 	}
 
 	logger.Info("pipeline started", "stage", pipeline.Status.CurrentStage)
+	postLogEntry(pipeline.Spec.TaskId, "INFO", "operator:pipeline", fmt.Sprintf("Pipeline %s started, first stage: %s", pipeline.Name, pipeline.Status.CurrentStage), "flow", map[string]interface{}{"pipeline": pipeline.Name, "stage": pipeline.Status.CurrentStage})
 	return r.createTasksForCurrentStage(ctx, pipeline)
 }
 
 func (r *AgentPipelineReconciler) handleRunning(ctx context.Context, pipeline *agentsv1alpha1.AgentPipeline) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
 	currentStage := r.getCurrentStage(pipeline)
 	if currentStage == nil {
 		return r.failPipeline(ctx, pipeline, "current stage not found in spec")
@@ -182,6 +179,7 @@ func (r *AgentPipelineReconciler) advanceToNextStage(ctx context.Context, pipeli
 		}
 
 		logger.Info("pipeline completed", "pipeline", pipeline.Name)
+		postLogEntry(pipeline.Spec.TaskId, "INFO", "operator:pipeline", fmt.Sprintf("Pipeline %s completed", pipeline.Name), "output", map[string]interface{}{"pipeline": pipeline.Name})
 		return ctrl.Result{}, nil
 	}
 
@@ -191,6 +189,7 @@ func (r *AgentPipelineReconciler) advanceToNextStage(ctx context.Context, pipeli
 	}
 
 	logger.Info("advancing to next stage", "stage", pipeline.Status.CurrentStage)
+	postLogEntry(pipeline.Spec.TaskId, "INFO", "operator:pipeline", fmt.Sprintf("Advancing to stage: %s", pipeline.Status.CurrentStage), "status", map[string]interface{}{"pipeline": pipeline.Name, "stage": pipeline.Status.CurrentStage})
 	return r.createTasksForCurrentStage(ctx, pipeline)
 }
 
@@ -297,6 +296,7 @@ func (r *AgentPipelineReconciler) failPipeline(ctx context.Context, pipeline *ag
 		return ctrl.Result{}, err
 	}
 	logger.Error(fmt.Errorf(reason), "pipeline failed", "pipeline", pipeline.Name)
+	postLogEntry(pipeline.Spec.TaskId, "ERROR", "operator:pipeline", fmt.Sprintf("Pipeline %s failed: %s", pipeline.Name, reason), "error", map[string]interface{}{"pipeline": pipeline.Name, "reason": reason})
 	return ctrl.Result{}, nil
 }
 
