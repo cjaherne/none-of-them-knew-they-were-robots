@@ -224,7 +224,7 @@ npm install
 npx tsx src/server.ts
 ```
 
-Open http://localhost:3000. The same UI is used for the local test harness and for the AWS cloud deployment; use **Backend → Mode** to switch between **Local Test Harness** and **AWS Cloud** (cloud mode uses separate REST and WebSocket URLs). The layout is responsive: desktop shows a 300px sidebar (command + config) and a main panel (pipeline, approval, event log); below 768px the sidebar collapses and can be toggled via Settings.
+Open http://localhost:3000. The same UI is used for the local test harness and for the AWS cloud deployment; use **Backend → Mode** to switch between **Local Test Harness** and **AWS Cloud** (cloud mode uses separate REST and WebSocket URLs). The layout is responsive: desktop shows a 300px sidebar (command + config) and a main panel (pipeline, approval, event log); below 768px the sidebar collapses and can be toggled via Settings. Use the **Live** / **History** tabs to switch between the current run and a list of past tasks with their full log timelines.
 
 Configure in the sidebar:
 
@@ -234,6 +234,7 @@ Configure in the sidebar:
 - **Pipeline mode** -- Auto (BigBoss decides), Full, Code+Test, or Code Only (local only)
 - **Voice** -- toggle spoken status updates and design approval announcements (local only)
 - **Require design approval** -- pause the pipeline after the design stage for human review (local only)
+- **Log level** -- DEBUG, INFO, WARN, or ERROR; controls which log entries are captured and shown (local only; default INFO)
 
 #### Voice input
 
@@ -262,7 +263,7 @@ A **codebase summary cache** (`.pipeline/context-cache.json`) persists per-file 
 
 For complex tasks, BigBoss can fan out design work to multiple specialist designers (UX, Core Code, Graphics) running in parallel. Each writes to `.pipeline/<agent>-design.md`, and the orchestrator merges them into a unified `DESIGN.md` (via OpenAI merge or concatenation fallback) before passing to the coding stage.
 
-Debug logs are written to `%TEMP%/agent-mvp-logs`.
+Structured logging and task history are persisted in SQLite (`test-harness/data/logs.db`). The server exposes `GET /logs`, `GET /tasks/history`, `GET /tasks/:id/detail`, and `POST /config/log-level`; the event log shows level badges and category tags, and the History tab lists past prompts with full log detail. Debug logs are written to `%TEMP%/agent-mvp-logs`.
 
 ### Voice command (cloud)
 
