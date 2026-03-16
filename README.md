@@ -81,10 +81,13 @@ kubectl get agenttasks        # or: kubectl get at
 ├── scripts/                Setup scripts (GitHub PAT, Cursor API key)
 ├── helm/agent-system/      Helm chart for K8s deployment
 ├── infra/                  AWS CDK (EKS, DynamoDB, S3, API Gateway)
-└── client/web/             Mobile-friendly voice control web UI
+├── test-harness/           Local MVP test harness (Express + agent CLI)
+└── client/web/             Browser UI (works with both cloud and local)
 ```
 
 ## Prerequisites
+
+### Full cloud deployment
 
 - Node.js 20+
 - Go 1.22+ (for the operator)
@@ -96,6 +99,12 @@ kubectl get agenttasks        # or: kubectl get at
 - An OpenAI API key in AWS Secrets Manager
 - A Cursor API key
 - A GitHub account with a Personal Access Token (PAT) that has `repo` scope
+
+### Local MVP testing (no cloud required)
+
+- Node.js 20+
+- The Cursor Agent CLI (`agent`) installed locally
+- Git
 
 ## Setup
 
@@ -208,7 +217,26 @@ localStorage.setItem("wsUrl", "wss://your-ws-id.execute-api.region.amazonaws.com
 
 ## Usage
 
-### Voice command
+### Local MVP test harness
+
+The fastest way to try the system. Runs the full 3-stage pipeline (design, coding, testing) locally using the Cursor Agent CLI:
+
+```bash
+cd test-harness
+npm install
+npx tsx src/server.ts
+```
+
+Open http://localhost:3000 and configure:
+
+- **Workspace** -- local directory where the agent will create files (e.g. `C:\dev\my-project`)
+- **Repo** -- GitHub repo URL (optional, for clone + push)
+- **Base branch** -- branch to fork from (default: `main`)
+- **Work branch** -- name for the new branch (auto-generated if blank)
+
+Type a prompt and click "Run Pipeline". The design agent produces a `DESIGN.md`, the coding agent implements it, and the testing agent validates it. All stages work in the same workspace on a single branch. Debug logs are written to `%TEMP%/agent-mvp-logs`.
+
+### Voice command (cloud)
 
 1. Open `client/web/index.html` on your phone
 2. Tap the microphone button
@@ -219,7 +247,7 @@ localStorage.setItem("wsUrl", "wss://your-ws-id.execute-api.region.amazonaws.com
 
 Type a command in the text input and press Send.
 
-### API
+### API (cloud)
 
 ```bash
 # Submit a task
@@ -362,12 +390,16 @@ cd operator && make build
 # Run operator locally (with kubeconfig)
 cd operator && make run
 
+# Run the local test harness
+cd test-harness && npx tsx src/server.ts
+
 # Type-check everything
 npx tsc --noEmit -p packages/shared/tsconfig.json
 npx tsc --noEmit -p packages/services/tsconfig.json
 npx tsc --noEmit -p packages/api/tsconfig.json
 npx tsc --noEmit -p agent-runtime/tsconfig.json
 npx tsc --noEmit -p infra/tsconfig.json
+npx tsc --noEmit -p test-harness/tsconfig.json
 ```
 
 ## Licence
