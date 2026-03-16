@@ -1,12 +1,16 @@
-import express from "express";
 import * as path from "path";
+import { config as loadEnv } from "dotenv";
+
+loadEnv({ path: path.resolve(__dirname, "..", ".env.local") });
+
+import express from "express";
 import { taskStore } from "./local-task-store";
 import { runPipeline } from "./local-orchestrator";
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const app = express();
 
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 app.use((_req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -20,14 +24,33 @@ app.use(express.static(webRoot));
 // --- POST /voice-command ---
 app.post("/voice-command", async (req, res) => {
   try {
-    const { text, repo, workspace, baseBranch, branch } = req.body;
+    const { text, audioBase64, repo, workspace, baseBranch, branch, pipelineMode, requireApproval } = req.body;
 
-    if (!text || typeof text !== "string") {
-      res.status(400).json({ error: "Provide a text field" });
-      return;
+    let prompt: string | undefined;
+    let transcript: string | undefined;
+
+    if (text && typeof text === "string") {
+      prompt = text.trim();
+    } else if (audioBase64 && typeof audioBase64 === "string") {
+      if (!process.env.OPENAI_API_KEY) {
+        res.status(400).json({ error: "Voice input requires OPENAI_API_KEY for Whisper transcription. Use the browser SpeechRecognition (Chrome/Edge) or add your key to .env.local." });
+        return;
+      }
+      try {
+        transcript = await transcribeWithWhisper(audioBase64);
+        prompt = transcript;
+        console.log(`[whisper] Transcribed: "${transcript}"`);
+      } catch (err) {
+        console.error("Whisper transcription failed:", err);
+        res.status(500).json({ error: "Transcription failed. Check your OPENAI_API_KEY." });
+        return;
+      }
     }
 
-    let prompt = text.trim();
+    if (!prompt) {
+      res.status(400).json({ error: "Provide a text field or audioBase64" });
+      return;
+    }
 
     if (process.env.OPENAI_API_KEY) {
       try {
@@ -38,9 +61,8 @@ app.post("/voice-command", async (req, res) => {
       }
     }
 
-    const task = taskStore.createTask(prompt, { repo, workspace, baseBranch, branch });
+    const task = taskStore.createTask(prompt, { repo, workspace, baseBranch, branch, pipelineMode, requireApproval: !!requireApproval });
 
-    // Run pipeline asynchronously -- don't await
     runPipeline(task).catch((err) => {
       console.error(`Pipeline error for task ${task.id}:`, err);
     });
@@ -48,11 +70,39 @@ app.post("/voice-command", async (req, res) => {
     res.status(201).json({
       taskId: task.id,
       status: task.status,
+      transcript,
     });
   } catch (err) {
     console.error("Voice command error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
+});
+
+// --- POST /tasks/:id/approve ---
+app.post("/tasks/:id/approve", (req, res) => {
+  const task = taskStore.getTask(req.params.id);
+  if (!task) {
+    res.status(404).json({ error: "Task not found" });
+    return;
+  }
+  const { approved, action, feedback } = req.body;
+  const response = {
+    approved: approved !== false,
+    action: action || (approved !== false ? "approve" : "reject"),
+    feedback: feedback || undefined,
+  };
+  taskStore.resolveApproval(req.params.id, response);
+  res.json({ ok: true, ...response });
+});
+
+// --- POST /tasks/:id/cancel ---
+app.post("/tasks/:id/cancel", (_req, res) => {
+  const cancelled = taskStore.cancelTask(_req.params.id);
+  if (!cancelled) {
+    res.status(404).json({ error: "Task not found or not cancellable" });
+    return;
+  }
+  res.json({ ok: true, cancelled: true });
 });
 
 // --- GET /tasks/:id ---
@@ -88,10 +138,10 @@ app.get("/tasks/:id/stream", (req, res) => {
   const unsubscribe = taskStore.subscribe(task.id, (event) => {
     res.write(`data: ${JSON.stringify(event)}\n\n`);
 
-    if (
-      event.type === "status_change" &&
-      (event.data?.status === "completed" || event.data?.status === "failed")
-    ) {
+    const terminal = event.data?.status === "completed"
+      || event.data?.status === "failed"
+      || event.data?.status === "cancelled";
+    if (event.type === "status_change" && terminal) {
       res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
       res.end();
     }
@@ -101,6 +151,23 @@ app.get("/tasks/:id/stream", (req, res) => {
     unsubscribe();
   });
 });
+
+// --- Whisper transcription (requires OPENAI_API_KEY) ---
+async function transcribeWithWhisper(base64Audio: string): Promise<string> {
+  const { default: OpenAI, toFile } = await import("openai");
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+  const audioBuffer = Buffer.from(base64Audio, "base64");
+  const file = await toFile(audioBuffer, "recording.webm", { type: "audio/webm" });
+
+  const response = await client.audio.transcriptions.create({
+    model: "whisper-1",
+    file,
+    language: "en",
+  });
+
+  return response.text.trim();
+}
 
 // --- Intent parsing (optional, if OPENAI_API_KEY is set) ---
 async function parseIntentWithOpenAI(
@@ -129,11 +196,13 @@ async function parseIntentWithOpenAI(
 }
 
 app.listen(PORT, () => {
+  const hasKey = !!process.env.OPENAI_API_KEY;
   console.log(`\n  MVP Test Harness running at http://localhost:${PORT}`);
   console.log(`  Serving UI from ${webRoot}`);
-  console.log(
-    `  Intent parsing: ${process.env.OPENAI_API_KEY ? "enabled" : "disabled (set OPENAI_API_KEY to enable)"}`,
-  );
+  console.log(`  OpenAI integration: ${hasKey ? "enabled (intent parsing + lightweight BigBoss)" : "disabled"}`);
+  if (!hasKey) {
+    console.log(`  → Copy .env.local.example to .env.local and add OPENAI_API_KEY to enable`);
+  }
   console.log(`  Skills root: ${process.env.SKILLS_ROOT || path.resolve(__dirname, "..", "..", "skills")}`);
   console.log(`  Agent debug logs: ${path.join(require("os").tmpdir(), "agent-mvp-logs")}\n`);
 });

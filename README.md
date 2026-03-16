@@ -105,6 +105,7 @@ kubectl get agenttasks        # or: kubectl get at
 - Node.js 20+
 - The Cursor Agent CLI (`agent`) installed locally
 - Git
+- (Optional) An OpenAI API key -- enables lightweight BigBoss routing, voice transcription (Whisper), and AI-powered design/feedback summaries. Without it, BigBoss falls back to the full agent CLI and voice input uses browser-native SpeechRecognition.
 
 ## Setup
 
@@ -219,10 +220,11 @@ localStorage.setItem("wsUrl", "wss://your-ws-id.execute-api.region.amazonaws.com
 
 ### Local MVP test harness
 
-The fastest way to try the system. Runs the full 3-stage pipeline (design, coding, testing) locally using the Cursor Agent CLI:
+The fastest way to try the system. Runs the full multi-stage pipeline (design, coding, testing) locally using the Cursor Agent CLI with an interactive BigBoss orchestrator:
 
 ```bash
 cd test-harness
+cp .env.local.example .env.local   # add your OPENAI_API_KEY here (optional)
 npm install
 npx tsx src/server.ts
 ```
@@ -233,8 +235,27 @@ Open http://localhost:3000 and configure:
 - **Repo** -- GitHub repo URL (optional, for clone + push)
 - **Base branch** -- branch to fork from (default: `main`)
 - **Work branch** -- name for the new branch (auto-generated if blank)
+- **Pipeline mode** -- Auto (BigBoss decides), Full, Code+Test, or Code Only
+- **Voice** -- toggle spoken status updates and design approval announcements
+- **Require design approval** -- pause the pipeline after the design stage for human review
 
-Type a prompt and click "Run Pipeline". The design agent produces a `DESIGN.md`, the coding agent implements it, and the testing agent validates it. All stages work in the same workspace on a single branch. Debug logs are written to `%TEMP%/agent-mvp-logs`.
+#### Voice input
+
+Click the microphone button to speak your prompt. In Chrome/Edge, the browser's native SpeechRecognition transcribes your speech in real-time and auto-submits. For other browsers, audio is sent to the server for OpenAI Whisper transcription (requires `OPENAI_API_KEY`).
+
+#### Interactive pipeline
+
+The pipeline now supports human-in-the-loop checkpoints:
+
+- **Design approval** -- after the design agent produces `DESIGN.md`, BigBoss summarises the design and presents it for review. You can approve, request changes (with written feedback that gets fed back to the designer), or reject.
+- **Coding feedback** -- if the coding agent writes `CODING_NOTES.md` (flagging design issues encountered during implementation), BigBoss summarises the feedback and lets you choose to continue to testing or re-run the design stage with the coding notes as context.
+- **Pipeline cancellation** -- click Stop at any time to abort the running agent and cancel the pipeline.
+
+#### Context passing
+
+Agents pass structured context between stages via handoff files (`.pipeline/<agent>.handoff.md`). The design agent receives a workspace inventory (file tree + key file contents) so it produces context-aware designs for existing codebases. The coding agent receives the full design spec. The testing agent receives both design and coding context.
+
+Debug logs are written to `%TEMP%/agent-mvp-logs`.
 
 ### Voice command (cloud)
 
@@ -401,6 +422,22 @@ npx tsc --noEmit -p agent-runtime/tsconfig.json
 npx tsc --noEmit -p infra/tsconfig.json
 npx tsc --noEmit -p test-harness/tsconfig.json
 ```
+
+### Local environment variables
+
+The test harness loads environment variables from `test-harness/.env.local` (gitignored). Copy the example file and add your keys:
+
+```bash
+cd test-harness
+cp .env.local.example .env.local
+```
+
+| Variable | Purpose | Required |
+|----------|---------|----------|
+| `OPENAI_API_KEY` | Lightweight BigBoss routing (gpt-4o-mini), Whisper voice transcription, design/feedback summarisation | Optional |
+| `PORT` | Override the default port (3000) | Optional |
+| `SKILLS_ROOT` | Override the skills directory path | Optional |
+| `CURSOR_CLI` | Override the Cursor agent CLI path | Optional |
 
 ## Licence
 
