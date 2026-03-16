@@ -253,7 +253,18 @@ The pipeline now supports human-in-the-loop checkpoints:
 
 #### Context passing
 
-Agents pass structured context between stages via handoff files (`.pipeline/<agent>.handoff.md`). The design agent receives a workspace inventory (file tree + key file contents) so it produces context-aware designs for existing codebases. The coding agent receives the full design spec. The testing agent receives both design and coding context.
+Agents receive rich, role-specific codebase context injected directly into their prompts:
+
+- **Design agents** get the full file tree, tech stack detection, git history, branch diff stats, project config files, and key architectural source files (entry points, types, interfaces).
+- **Coding agents** get the file tree, the full `DESIGN.md` content (no disk read needed), project config, and upstream handoff files.
+- **Testing agents** get `DESIGN.md`, existing test patterns with code samples, npm scripts, and upstream handoffs.
+- **BigBoss** acts as a **context broker** -- it receives a workspace summary and produces per-agent focus briefs (1-3 sentences) telling each agent exactly which files and patterns to pay attention to.
+
+A **codebase summary cache** (`.pipeline/context-cache.json`) persists per-file purpose summaries with incremental git-diff updates, so repeated pipeline runs don't re-analyse unchanged files.
+
+#### Parallel design stages
+
+For complex tasks, BigBoss can fan out design work to multiple specialist designers (UX, Core Code, Graphics) running in parallel. Each writes to `.pipeline/<agent>-design.md`, and the orchestrator merges them into a unified `DESIGN.md` (via OpenAI merge or concatenation fallback) before passing to the coding stage.
 
 Debug logs are written to `%TEMP%/agent-mvp-logs`.
 
@@ -375,7 +386,7 @@ The agent lifecycle:
 3. Configure git identity (user name, email, credential helper)
 4. Write cursor rules files to `/workspace/.cursor/rules/` (multiple `.md` files)
 5. Write MCP config to `/workspace/.cursor/mcp.json` (with env var templating for secrets)
-6. Build prompt: system prompt + task + tool hints + constraint hints + upstream context
+6. Build prompt: role preamble + BigBoss context brief + file tree + git history + design doc + upstream handoffs + system prompt + task + tool hints
 7. Run `cursor-agent -p --force --trust --output-format stream-json "<prompt>"`
 8. Validate output: check forbidden actions, verify required fields (retry once if missing)
 9. Commit and push changes to a branch (`agent/<pipeline>/<agent-type>`)

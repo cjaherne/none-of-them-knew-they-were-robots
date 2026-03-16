@@ -67,6 +67,8 @@ export interface PipelineStage {
   name: string;
   parallel?: boolean;
   agents: PipelineStageAgent[];
+  /** Per-agent context briefs produced by BigBoss context broker */
+  agentBriefs?: Record<string, string>;
 }
 
 export enum PipelinePhase {
@@ -124,6 +126,10 @@ export interface AgentTaskResult {
   errors?: string[];
   durationMs: number;
   timestamp: string;
+  tokenUsage?: { inputTokens: number; outputTokens: number; cacheReadTokens?: number };
+  estimatedCost?: number;
+  commitSha?: string;
+  branch?: string;
 }
 
 export interface AgentTaskStatus {
