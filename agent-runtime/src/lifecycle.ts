@@ -140,6 +140,13 @@ function buildFullPrompt(
 
   parts.push(skillPack.systemPrompt);
   parts.push("");
+
+  if (config.contextBrief) {
+    parts.push("## Codebase Context");
+    parts.push(config.contextBrief);
+    parts.push("");
+  }
+
   parts.push("---");
   parts.push("");
   parts.push("## Task");

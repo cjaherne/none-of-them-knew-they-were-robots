@@ -68,6 +68,10 @@ export interface AgentRunConfig {
   /** Trivial tasks get reduced timeouts and skip handoff files */
   trivial?: boolean;
   upstreamResults?: AgentRunResult[];
+  /** Per-agent context brief from BigBoss context broker */
+  agentBrief?: string | null;
+  /** When true, design agents write to .pipeline/<agentType>-design.md instead of DESIGN.md */
+  parallelDesign?: boolean;
 }
 
 export interface TokenUsage {
@@ -180,8 +184,12 @@ const PREAMBLE_DESIGN = `
 You are running as a local CLI agent with full file-system access.
 Your role in this pipeline is DESIGN ONLY -- you must NOT write implementation code.
 
+You have been provided with comprehensive codebase context below, including
+the file tree, tech stack, git history, project configuration files, and key
+source files. USE THIS CONTEXT to produce an informed, specific design.
+
 Your job:
-1. Analyse the user's request and produce a detailed design document.
+1. Analyse the user's request AND the provided codebase context.
 2. Write the design to a file called DESIGN.md in the workspace root.
 3. The design document should include:
    - High-level architecture and approach
@@ -193,13 +201,45 @@ Your job:
 4. Be specific and actionable -- the Coding Agent will use this document
    as its sole blueprint. Include code snippets or pseudocode where helpful.
 
-If the workspace already contains source files (listed under "Existing Workspace"
-above), your design should BUILD ON the existing codebase rather than starting
-from scratch. Reference existing files by name and describe what should be added
-or modified. Only propose new files for genuinely new functionality.
+If the workspace already contains source files (shown in the Workspace File Tree),
+your design MUST BUILD ON the existing codebase. Reference existing files by name.
+Describe what should be added or modified. Only propose new files for genuinely
+new functionality. Match existing code style and patterns.
 
 DO NOT create any implementation files (no .js, .ts, .html, .css, etc.).
 ONLY produce the DESIGN.md file.
+`.trim();
+
+const PREAMBLE_DESIGN_PARALLEL = `
+You are running as a local CLI agent with full file-system access.
+Your role in this pipeline is DESIGN ONLY -- you must NOT write implementation code.
+You are ONE OF SEVERAL design agents running IN PARALLEL on this task.
+
+You have been provided with comprehensive codebase context below, including
+the file tree, tech stack, git history, project configuration files, and key
+source files. USE THIS CONTEXT to produce an informed, specific design.
+
+Your job:
+1. Analyse the user's request AND the provided codebase context.
+2. Write your design to: .pipeline/AGENT_TYPE-design.md
+   (where AGENT_TYPE is your agent name, provided in the prompt below).
+   DO NOT write to DESIGN.md -- the orchestrator will merge all parallel designs.
+3. The design document should include:
+   - High-level architecture and approach (from your specialization's perspective)
+   - File/directory structure for the implementation
+   - Key data models, interfaces, or schemas
+   - Component breakdown with responsibilities
+   - Dependencies and technology choices with rationale
+   - Any important implementation notes for the Coding Agent
+4. Be specific and actionable -- the Coding Agent will use the merged document
+   as its sole blueprint. Include code snippets or pseudocode where helpful.
+
+If the workspace already contains source files (shown in the Workspace File Tree),
+your design MUST BUILD ON the existing codebase. Reference existing files by name.
+Describe what should be added or modified. Only propose new files for genuinely
+new functionality. Match existing code style and patterns.
+
+DO NOT create any implementation files (no .js, .ts, .html, .css, etc.).
 `.trim();
 
 const PREAMBLE_CODING = `
@@ -207,8 +247,12 @@ You are running as a local CLI agent with full file-system access.
 Your role in this pipeline is IMPLEMENTATION -- you receive a design document
 and must build it.
 
+The DESIGN.md content has been provided in your context below, along with the
+workspace file tree and upstream agent handoffs. You do NOT need to read
+DESIGN.md from disk -- it is already included in your prompt.
+
 Your job:
-1. Read DESIGN.md in the workspace root to understand the architecture.
+1. Review the DESIGN.md content provided below.
 2. Implement the full application as specified in the design.
 3. Use your file-write tools to create every file on disk.
 4. Use your shell tool to run setup commands (npm init, install deps, etc.).
@@ -231,89 +275,284 @@ You are running as a local CLI agent with full file-system access.
 Your role in this pipeline is TESTING -- you receive implemented code and
 must validate it.
 
+You have been provided with DESIGN.md content, the workspace file tree,
+upstream agent handoffs, existing test patterns (if any), and available npm
+scripts. Use this context to write comprehensive tests.
+
 Your job:
-1. Read the existing source files in the workspace to understand what was built.
-2. Read DESIGN.md (if present) to understand intended behaviour.
+1. Review the DESIGN.md and upstream handoff content provided below.
+2. Examine the source files in the workspace to understand what was built.
 3. Create test files using an appropriate testing framework.
 4. Use your shell tool to install test dependencies and run the tests.
 5. Report on test results, coverage, and any issues found.
 
+If existing test patterns are provided below, follow the same testing style
+and framework. Check the available npm scripts for existing test commands.
+
 Write all test files to disk and execute them.
 `.trim();
 
-function getPreamble(category: string): string {
+function getPreamble(category: string, parallelDesign?: boolean): string {
   switch (category) {
     case "planning": return PREAMBLE_PLANNING;
-    case "design": return PREAMBLE_DESIGN;
+    case "design": return parallelDesign ? PREAMBLE_DESIGN_PARALLEL : PREAMBLE_DESIGN;
     case "coding": return PREAMBLE_CODING;
     case "validation": return PREAMBLE_TESTING;
     default: return PREAMBLE_CODING;
   }
 }
 
-function getWorkspaceInventory(workDir: string): string | null {
+// ---------------------------------------------------------------------------
+// Context brief builder -- role-specific codebase context for each agent
+// ---------------------------------------------------------------------------
+
+const SKIP_DIRS = new Set([".cursor", ".pipeline", ".git", "node_modules", ".next", "dist", "build", "__pycache__", ".venv"]);
+const PROJECT_FILES = ["package.json", "README.md", "Cargo.toml", "go.mod", "pyproject.toml", "requirements.txt", "tsconfig.json"];
+const ARCH_EXTENSIONS = new Set([".ts", ".js", ".tsx", ".jsx", ".py", ".go", ".rs", ".java", ".cs"]);
+
+function listSourceFiles(workDir: string): string[] {
   try {
-    let files: string[];
-    try {
-      const output = execSync("git ls-files", {
-        cwd: workDir,
-        encoding: "utf-8",
-        timeout: 10_000,
-        stdio: "pipe",
-      });
-      files = output.split("\n").map((f) => f.trim()).filter(Boolean);
-    } catch {
-      const output = execSync(
-        process.platform === "win32" ? "dir /s /b /a-d" : "find . -type f -not -path './.git/*'",
-        { cwd: workDir, encoding: "utf-8", timeout: 10_000, stdio: "pipe" },
-      );
-      files = output.split("\n").map((f) => f.trim()).filter(Boolean);
-    }
-
-    const sourceFiles = files.filter(
-      (f) => !f.startsWith(".cursor/") && !f.startsWith(".pipeline/") && !f.startsWith(".git/"),
-    );
-
-    if (sourceFiles.length === 0) return null;
-
-    const listing = sourceFiles.slice(0, 50).map((f) => {
-      try {
-        const stat = require("fs").statSync(path.join(workDir, f));
-        const content = require("fs").readFileSync(path.join(workDir, f), "utf-8");
-        const lineCount = content.split("\n").length;
-        return `- ${f} (${lineCount} lines)`;
-      } catch {
-        return `- ${f}`;
-      }
+    const output = execSync("git ls-files", {
+      cwd: workDir, encoding: "utf-8", timeout: 10_000, stdio: "pipe",
     });
-
-    if (sourceFiles.length > 50) {
-      listing.push(`- ... and ${sourceFiles.length - 50} more files`);
-    }
-
-    return listing.join("\n");
+    return output.split("\n").map((f) => f.trim()).filter(Boolean)
+      .filter((f) => !f.startsWith(".cursor/") && !f.startsWith(".pipeline/") && !f.startsWith(".git/"));
   } catch {
-    return null;
+    try {
+      const cmd = process.platform === "win32" ? "dir /s /b /a-d" : "find . -type f -not -path './.git/*'";
+      const output = execSync(cmd, { cwd: workDir, encoding: "utf-8", timeout: 10_000, stdio: "pipe" });
+      return output.split("\n").map((f) => f.trim()).filter(Boolean)
+        .filter((f) => !SKIP_DIRS.has(f.split("/")[0]) && !SKIP_DIRS.has(f.split("\\")[0]));
+    } catch { return []; }
   }
 }
 
-function getKeyFileContents(workDir: string): string | null {
-  const summaryFiles = ["package.json", "README.md", "Cargo.toml", "go.mod", "pyproject.toml", "requirements.txt"];
-  const sections: string[] = [];
+function getFileTree(workDir: string): string | null {
+  const files = listSourceFiles(workDir);
+  if (files.length === 0) return null;
 
-  for (const name of summaryFiles) {
-    try {
-      const content = require("fs").readFileSync(path.join(workDir, name), "utf-8");
-      if (content.trim()) {
-        const preview = content.length > 1500 ? content.slice(0, 1500) + "\n... (truncated)" : content;
-        sections.push(`### ${name}\n\`\`\`\n${preview}\n\`\`\``);
-      }
-    } catch {
-      // file doesn't exist
-    }
+  const groups: Record<string, string[]> = {};
+  for (const f of files) {
+    const dir = f.includes("/") ? f.split("/").slice(0, -1).join("/") : "(root)";
+    (groups[dir] ??= []).push(f.split("/").pop()!);
   }
 
+  const lines: string[] = [];
+  const sortedDirs = Object.keys(groups).sort();
+  for (const dir of sortedDirs.slice(0, 30)) {
+    lines.push(`${dir}/`);
+    for (const file of groups[dir].slice(0, 15)) {
+      lines.push(`  ${file}`);
+    }
+    if (groups[dir].length > 15) lines.push(`  ... +${groups[dir].length - 15} more`);
+  }
+  if (sortedDirs.length > 30) lines.push(`... +${sortedDirs.length - 30} more directories`);
+  lines.push(`\nTotal: ${files.length} files`);
+  return lines.join("\n");
+}
+
+function getGitHistory(workDir: string): string | null {
+  try {
+    return execSync("git log --oneline -15", {
+      cwd: workDir, encoding: "utf-8", timeout: 5_000, stdio: "pipe",
+    }).trim() || null;
+  } catch { return null; }
+}
+
+function getGitDiffStat(workDir: string, baseBranch?: string): string | null {
+  const ref = baseBranch || "main";
+  try {
+    return execSync(`git diff ${ref}..HEAD --stat`, {
+      cwd: workDir, encoding: "utf-8", timeout: 5_000, stdio: "pipe",
+    }).trim() || null;
+  } catch { return null; }
+}
+
+function detectTechStack(workDir: string): string {
+  const parts: string[] = [];
+  const fsSync = require("fs");
+  const check = (file: string) => { try { fsSync.accessSync(path.join(workDir, file)); return true; } catch { return false; } };
+
+  if (check("package.json")) {
+    try {
+      const pkg = JSON.parse(fsSync.readFileSync(path.join(workDir, "package.json"), "utf-8"));
+      const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+      const frameworks: string[] = [];
+      if (deps["react"]) frameworks.push("React");
+      if (deps["vue"]) frameworks.push("Vue");
+      if (deps["svelte"]) frameworks.push("Svelte");
+      if (deps["next"]) frameworks.push("Next.js");
+      if (deps["express"]) frameworks.push("Express");
+      if (deps["typescript"]) frameworks.push("TypeScript");
+      parts.push(`Node.js${frameworks.length ? ` (${frameworks.join(", ")})` : ""}`);
+    } catch { parts.push("Node.js"); }
+  }
+  if (check("go.mod")) parts.push("Go");
+  if (check("Cargo.toml")) parts.push("Rust");
+  if (check("pyproject.toml") || check("requirements.txt")) parts.push("Python");
+  if (check("pom.xml") || check("build.gradle")) parts.push("Java");
+  return parts.join(", ") || "Unknown";
+}
+
+function readFileSafe(filePath: string, maxChars = 3000): string | null {
+  try {
+    const content = require("fs").readFileSync(filePath, "utf-8");
+    if (!content.trim()) return null;
+    return content.length > maxChars ? content.slice(0, maxChars) + "\n... (truncated)" : content;
+  } catch { return null; }
+}
+
+function getProjectFiles(workDir: string, maxPerFile = 2000): string | null {
+  const sections: string[] = [];
+  for (const name of PROJECT_FILES) {
+    const content = readFileSafe(path.join(workDir, name), maxPerFile);
+    if (content) sections.push(`### ${name}\n\`\`\`\n${content}\n\`\`\``);
+  }
   return sections.length > 0 ? sections.join("\n\n") : null;
+}
+
+function getArchitecturalFiles(workDir: string, maxTotal = 10000): string | null {
+  const files = listSourceFiles(workDir);
+  const entryPatterns = [/index\.[tj]sx?$/, /main\.[tj]sx?$/, /app\.[tj]sx?$/, /server\.[tj]sx?$/, /^src\/[^/]+\.[tj]sx?$/];
+  const typePatterns = [/types?\.[tj]s$/, /interfaces?\.[tj]s$/, /models?\.[tj]s$/, /schema\.[tj]s$/];
+
+  const candidates = files.filter((f) => {
+    const ext = path.extname(f);
+    if (!ARCH_EXTENSIONS.has(ext)) return false;
+    const base = path.basename(f);
+    return entryPatterns.some((p) => p.test(f)) || typePatterns.some((p) => p.test(base));
+  });
+
+  const sections: string[] = [];
+  let totalChars = 0;
+  for (const f of candidates.slice(0, 8)) {
+    const content = readFileSafe(path.join(workDir, f), 2000);
+    if (content && totalChars + content.length < maxTotal) {
+      sections.push(`### ${f}\n\`\`\`\n${content}\n\`\`\``);
+      totalChars += content.length;
+    }
+  }
+  return sections.length > 0 ? sections.join("\n\n") : null;
+}
+
+function getDesignDoc(workDir: string, maxChars = 8000): string | null {
+  return readFileSafe(path.join(workDir, "DESIGN.md"), maxChars);
+}
+
+function getHandoffContent(workDir: string, agentType: string, maxChars = 4000): string | null {
+  return readFileSafe(path.join(workDir, ".pipeline", `${agentType}.handoff.md`), maxChars);
+}
+
+function getTestPatterns(workDir: string): string | null {
+  const files = listSourceFiles(workDir);
+  const testFiles = files.filter((f) => /\.(test|spec)\.[tj]sx?$/.test(f) || f.includes("__tests__/"));
+  if (testFiles.length === 0) return null;
+
+  const sections: string[] = [];
+  sections.push(`Found ${testFiles.length} existing test file(s):`);
+  for (const f of testFiles.slice(0, 5)) {
+    const content = readFileSafe(path.join(workDir, f), 1500);
+    if (content) {
+      sections.push(`### ${f}\n\`\`\`\n${content}\n\`\`\``);
+    } else {
+      sections.push(`- ${f}`);
+    }
+  }
+  if (testFiles.length > 5) sections.push(`... and ${testFiles.length - 5} more test files`);
+  return sections.join("\n\n");
+}
+
+function getPackageScripts(workDir: string): string | null {
+  try {
+    const pkg = JSON.parse(require("fs").readFileSync(path.join(workDir, "package.json"), "utf-8"));
+    if (pkg.scripts && Object.keys(pkg.scripts).length > 0) {
+      return Object.entries(pkg.scripts).map(([k, v]) => `- \`npm run ${k}\` → \`${v}\``).join("\n");
+    }
+  } catch { /* no package.json */ }
+  return null;
+}
+
+export interface ContextBrief {
+  fileTree: string | null;
+  techStack: string;
+  gitHistory: string | null;
+  gitDiff: string | null;
+  projectFiles: string | null;
+  architecturalFiles: string | null;
+  designDoc: string | null;
+  handoffContent: Record<string, string>;
+  testPatterns: string | null;
+  packageScripts: string | null;
+  /** Per-agent focus hints from BigBoss context broker */
+  agentBrief: string | null;
+}
+
+export function buildContextBrief(
+  category: string,
+  workDir: string,
+  upstreamResults?: AgentRunResult[],
+  baseBranch?: string,
+  agentBrief?: string | null,
+): ContextBrief {
+  const brief: ContextBrief = {
+    fileTree: null,
+    techStack: "Unknown",
+    gitHistory: null,
+    gitDiff: null,
+    projectFiles: null,
+    architecturalFiles: null,
+    designDoc: null,
+    handoffContent: {},
+    testPatterns: null,
+    packageScripts: null,
+    agentBrief: agentBrief || null,
+  };
+
+  brief.techStack = detectTechStack(workDir);
+
+  switch (category) {
+    case "planning":
+      brief.fileTree = getFileTree(workDir);
+      brief.gitHistory = getGitHistory(workDir);
+      brief.projectFiles = getProjectFiles(workDir, 1500);
+      break;
+
+    case "design":
+      brief.fileTree = getFileTree(workDir);
+      brief.gitHistory = getGitHistory(workDir);
+      brief.gitDiff = getGitDiffStat(workDir, baseBranch);
+      brief.projectFiles = getProjectFiles(workDir, 2000);
+      brief.architecturalFiles = getArchitecturalFiles(workDir, 8000);
+      brief.designDoc = getDesignDoc(workDir);
+      break;
+
+    case "coding":
+      brief.fileTree = getFileTree(workDir);
+      brief.designDoc = getDesignDoc(workDir, 12000);
+      brief.projectFiles = getProjectFiles(workDir, 1500);
+      if (upstreamResults) {
+        for (const r of upstreamResults) {
+          const content = getHandoffContent(workDir, r.agent);
+          if (content) brief.handoffContent[r.agent] = content;
+        }
+      }
+      break;
+
+    case "validation":
+      brief.fileTree = getFileTree(workDir);
+      brief.designDoc = getDesignDoc(workDir, 6000);
+      brief.testPatterns = getTestPatterns(workDir);
+      brief.packageScripts = getPackageScripts(workDir);
+      if (upstreamResults) {
+        for (const r of upstreamResults) {
+          const content = getHandoffContent(workDir, r.agent);
+          if (content) brief.handoffContent[r.agent] = content;
+        }
+      }
+      break;
+  }
+
+  return brief;
 }
 
 function buildFullPrompt(
@@ -322,27 +561,94 @@ function buildFullPrompt(
   workDir: string,
 ): string {
   const parts: string[] = [];
+  const brief = buildContextBrief(
+    config.category, workDir, config.upstreamResults, config.baseBranch, config.agentBrief,
+  );
 
-  parts.push(getPreamble(config.category));
+  parts.push(getPreamble(config.category, config.parallelDesign));
+  if (config.parallelDesign && config.category === "design") {
+    parts.push(`\nYour agent type is: ${config.agentType}`);
+    parts.push(`Write your design output to: .pipeline/${config.agentType}-design.md`);
+  }
   parts.push("");
 
-  if (config.category === "design") {
-    const inventory = getWorkspaceInventory(workDir);
-    if (inventory) {
-      parts.push("## Existing Workspace");
-      parts.push("This workspace already contains the following files:");
-      parts.push(inventory);
-      parts.push("");
+  // --- Codebase context (role-specific) ---
+  if (brief.agentBrief) {
+    parts.push("## BigBoss Context Brief");
+    parts.push("BigBoss has analyzed the codebase and prepared this guidance for you:");
+    parts.push(brief.agentBrief);
+    parts.push("");
+  }
 
-      const keyFiles = getKeyFileContents(workDir);
-      if (keyFiles) {
-        parts.push("## Key Project Files");
-        parts.push(keyFiles);
-        parts.push("");
-      }
+  if (brief.fileTree) {
+    parts.push("## Workspace File Tree");
+    parts.push(`Tech stack: ${brief.techStack}`);
+    parts.push("```");
+    parts.push(brief.fileTree);
+    parts.push("```");
+    parts.push("");
+  }
+
+  if (brief.gitHistory) {
+    parts.push("## Recent Git History");
+    parts.push("```");
+    parts.push(brief.gitHistory);
+    parts.push("```");
+    parts.push("");
+  }
+
+  if (brief.gitDiff) {
+    parts.push("## Changes on This Branch");
+    parts.push("```");
+    parts.push(brief.gitDiff);
+    parts.push("```");
+    parts.push("");
+  }
+
+  if (brief.projectFiles) {
+    parts.push("## Project Configuration Files");
+    parts.push(brief.projectFiles);
+    parts.push("");
+  }
+
+  if (brief.architecturalFiles) {
+    parts.push("## Key Source Files");
+    parts.push("These are the main entry points, types, and interfaces in the codebase:");
+    parts.push(brief.architecturalFiles);
+    parts.push("");
+  }
+
+  if (brief.designDoc) {
+    parts.push("## DESIGN.md");
+    parts.push("The design document for this task (produced by the Design agent):");
+    parts.push("```markdown");
+    parts.push(brief.designDoc);
+    parts.push("```");
+    parts.push("");
+  }
+
+  if (Object.keys(brief.handoffContent).length > 0) {
+    parts.push("## Upstream Agent Handoffs");
+    for (const [agent, content] of Object.entries(brief.handoffContent)) {
+      parts.push(`### ${agent} handoff`);
+      parts.push(content);
+      parts.push("");
     }
   }
 
+  if (brief.testPatterns) {
+    parts.push("## Existing Test Patterns");
+    parts.push(brief.testPatterns);
+    parts.push("");
+  }
+
+  if (brief.packageScripts) {
+    parts.push("## Available npm Scripts");
+    parts.push(brief.packageScripts);
+    parts.push("");
+  }
+
+  // --- Expertise + Task ---
   parts.push("## Your expertise (for context)");
   parts.push(skillPack.systemPrompt);
   parts.push("");
@@ -359,20 +665,14 @@ function buildFullPrompt(
     }
   }
 
+  // Upstream result summaries (lightweight, in addition to injected handoffs)
   if (config.upstreamResults && config.upstreamResults.length > 0) {
     parts.push("");
     parts.push("## Upstream agent results");
     for (const result of config.upstreamResults) {
       parts.push(`### ${result.agent}`);
       parts.push(`- Status: ${result.success ? "succeeded" : "failed"}`);
-      parts.push(`- Files created: ${result.filesModified.join(", ") || "none"}`);
-      if (result.parsed.assistantMessage) {
-        const summary = result.parsed.assistantMessage.length > 2000
-          ? result.parsed.assistantMessage.slice(0, 2000) + "\n... (truncated)"
-          : result.parsed.assistantMessage;
-        parts.push(`- Summary: ${summary}`);
-      }
-      parts.push(`- Handoff file: .pipeline/${result.agent}.handoff.md (read this for full details)`);
+      parts.push(`- Files modified: ${result.filesModified.join(", ") || "none"}`);
       if (result.errors.length > 0) {
         parts.push(`- Errors: ${result.errors.join("; ")}`);
       }

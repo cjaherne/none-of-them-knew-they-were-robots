@@ -11,6 +11,8 @@ export interface AgentConfig {
   upstreamRefs: string[];
   cursorFlags: string[];
   context: Record<string, string>;
+  /** Pre-built codebase context brief injected by the operator (via CONTEXT_BRIEF env var) */
+  contextBrief?: string;
   cursorApiKey: string;
   githubToken: string;
   gitUserName: string;

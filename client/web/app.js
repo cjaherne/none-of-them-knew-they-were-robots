@@ -438,6 +438,7 @@ function showPipeline(taskId) {
   currentRunningTaskId = taskId;
   cancelBtn.style.display = "inline-block";
   approvalBanner.classList.remove("visible");
+  finalizeRunningIndicator();
 }
 
 function buildStageElements(stages) {
@@ -560,10 +561,18 @@ function renderAllStageDetails(stages) {
 }
 
 // --- SSE connection ---
+let activeRunningEntry = null;
+let activeRunningStage = null;
+let activeRunningStart = null;
+
 function connectSSE(apiBase, taskId) {
   if (currentEventSource) {
     currentEventSource.close();
   }
+
+  activeRunningEntry = null;
+  activeRunningStage = null;
+  activeRunningStart = null;
 
   const url = `${apiBase}/tasks/${taskId}/stream`;
   const es = new EventSource(url);
@@ -581,6 +590,7 @@ function connectSSE(apiBase, taskId) {
       if (data.type === "done") {
         es.close();
         currentEventSource = null;
+        finalizeRunningIndicator();
         return;
       }
 
@@ -588,75 +598,160 @@ function connectSSE(apiBase, taskId) {
         updateStages(data.data.stages);
       }
 
-      if (data.type === "result" && data.data?.stage) {
-        const s = data.data.stage;
-        if (s.status === "succeeded") {
-          const files = s.filesModified?.length || 0;
-          const dur = s.durationMs ? `${(s.durationMs / 1000).toFixed(0)} seconds` : "";
-          const notes = s.notes ? ` ${s.notes.split("\n").length} coding notes logged.` : "";
-          speak(`${s.name} complete. ${files} files modified${dur ? ` in ${dur}` : ""}.${notes}`);
-        } else if (s.status === "failed") {
-          speak(`${s.name} stage failed.`);
-        }
-      }
+      // --- Smart logging: only meaningful events ---
 
       if (data.type === "status_change" && data.message?.includes("Pipeline stages set")) {
-        const stageNames = (data.data?.stages || []).map((s) => s.name).join(", ");
-        if (stageNames) speak(`This needs ${stageNames}.`);
+        const stageNames = (data.data?.stages || []).map((s) => s.name).join(" → ");
+        if (stageNames) {
+          addLogEntry(`Pipeline: ${stageNames}`, "info");
+          speak(`This needs ${stageNames.replace(/→/g, "then")}.`);
+        }
+        return;
       }
 
-      const logType =
-        data.type === "result"
-          ? data.data?.stage?.status === "failed" ? "error" : "success"
-          : "pending";
+      if (data.type === "log") {
+        const msg = data.message || "";
+        const stageMatch = msg.match(/Stage "([^"]+)" (\w+)/);
+        if (stageMatch) {
+          const [, stageName, stageStatus] = stageMatch;
 
-      addLogEntry(data.message || JSON.stringify(data), logType);
+          if (stageStatus === "running") {
+            if (activeRunningStage === stageName) {
+              updateRunningIndicator(stageName);
+              return;
+            }
+            finalizeRunningIndicator();
+            activeRunningStage = stageName;
+            activeRunningStart = Date.now();
+            activeRunningEntry = addRunningIndicator(stageName, data.agent || data.data?.agent);
+            return;
+          }
+
+          if (stageStatus === "succeeded" || stageStatus === "failed") {
+            finalizeRunningIndicator();
+            return;
+          }
+        }
+
+        if (!stageMatch && msg) {
+          addLogEntry(msg, "info");
+        }
+        return;
+      }
+
+      if (data.type === "result" && data.data?.stage) {
+        const s = data.data.stage;
+        finalizeRunningIndicator();
+
+        if (s.status === "succeeded") {
+          const files = s.filesModified?.length || 0;
+          const dur = s.durationMs ? `${(s.durationMs / 1000).toFixed(0)}s` : "";
+          const cost = s.estimatedCost ? ` · $${s.estimatedCost.toFixed(4)}` : "";
+          const notes = s.notes ? ` · feedback logged` : "";
+          addLogEntry(`${s.agent || s.name} completed — ${files} file(s)${dur ? ` in ${dur}` : ""}${cost}${notes}`, "success");
+          speak(`${s.name} complete. ${files} files modified${dur ? ` in ${dur}` : ""}.`);
+        } else if (s.status === "failed") {
+          const err = s.errors?.length ? `: ${s.errors[0]}` : "";
+          addLogEntry(`${s.agent || s.name} failed${err}`, "error");
+          speak(`${s.name} stage failed.`);
+        }
+        return;
+      }
 
       if (data.type === "status_change") {
+        finalizeRunningIndicator();
+
         if (data.data?.status === "completed") {
-          statusEl.textContent = "Pipeline completed successfully";
+          statusEl.textContent = "Pipeline completed";
           cancelBtn.style.display = "none";
           currentRunningTaskId = null;
           const stages = data.data?.stages || lastStagesSnapshot;
           const totalFiles = new Set();
-          stages.forEach((s) => (s.filesModified || []).forEach((f) => totalFiles.add(f)));
+          let totalCost = 0;
+          stages.forEach((s) => {
+            (s.filesModified || []).forEach((f) => totalFiles.add(f));
+            if (s.estimatedCost) totalCost += s.estimatedCost;
+          });
+          const costStr = totalCost > 0 ? ` · $${totalCost.toFixed(4)}` : "";
+          addLogEntry(`Pipeline complete — ${totalFiles.size} file(s) modified${costStr}`, "success");
           speak(`Pipeline complete. ${totalFiles.size} files modified across all stages.`);
         } else if (data.data?.status === "failed") {
-          statusEl.textContent = `Pipeline failed: ${data.data?.error || "unknown error"}`;
+          const errMsg = data.data?.error || "unknown error";
+          statusEl.textContent = `Pipeline failed`;
           cancelBtn.style.display = "none";
           currentRunningTaskId = null;
-          speak(`Pipeline failed. ${data.data?.error || "Unknown error"}.`);
+          addLogEntry(`Pipeline failed: ${errMsg}`, "error");
+          speak(`Pipeline failed. ${errMsg}.`);
         } else if (data.data?.status === "cancelled") {
           statusEl.textContent = "Pipeline cancelled";
           cancelBtn.style.display = "none";
           currentRunningTaskId = null;
           approvalBanner.classList.remove("visible");
+          addLogEntry("Pipeline cancelled by user", "error");
+        } else if (data.message && !data.message.includes("Stage")) {
+          addLogEntry(data.message, "info");
         }
+        return;
       }
 
       if (data.type === "approval_required") {
+        finalizeRunningIndicator();
+        addLogEntry(`Awaiting approval: ${data.data?.approvalType || "review"}`, "pending");
         handleApprovalRequired(data);
+        return;
       }
+
+      // Unhandled event types are silently ignored
+
     } catch {
-      addLogEntry(event.data, "pending");
+      // Ignore unparseable SSE
     }
   };
 
   es.onerror = () => {
-    addLogEntry("SSE connection lost", "error");
+    finalizeRunningIndicator();
+    addLogEntry("SSE connection lost — refresh to reconnect", "error");
     es.close();
     currentEventSource = null;
   };
+}
+
+function addRunningIndicator(stageName, agent) {
+  const entry = document.createElement("div");
+  entry.className = "log-entry running-indicator";
+  const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const displayName = agent ? `${agent}` : stageName;
+  entry.innerHTML = `<span class="time">${time}</span><span class="log-msg"><span class="spinner"></span> ${escapeHtml(displayName)} running <span class="elapsed">0s</span></span>`;
+  taskLog.appendChild(entry);
+  entry.scrollIntoView({ behavior: "smooth" });
+  return entry;
+}
+
+function updateRunningIndicator() {
+  if (!activeRunningEntry || !activeRunningStart) return;
+  const elapsed = Math.floor((Date.now() - activeRunningStart) / 1000);
+  const elSpan = activeRunningEntry.querySelector(".elapsed");
+  if (elSpan) elSpan.textContent = `${elapsed}s`;
+}
+
+function finalizeRunningIndicator() {
+  if (activeRunningEntry) {
+    activeRunningEntry.remove();
+    activeRunningEntry = null;
+    activeRunningStage = null;
+    activeRunningStart = null;
+  }
 }
 
 // --- Log entries ---
 function addLogEntry(message, type = "pending") {
   const entry = document.createElement("div");
   entry.className = `log-entry ${type}`;
-  const time = new Date().toLocaleTimeString();
-  entry.innerHTML = `<span class="time">${time}</span> ${escapeHtml(message)}`;
+  const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  entry.innerHTML = `<span class="time">${time}</span><span class="log-msg">${escapeHtml(message)}</span>`;
   taskLog.appendChild(entry);
   entry.scrollIntoView({ behavior: "smooth" });
+  return entry;
 }
 
 function escapeHtml(str) {

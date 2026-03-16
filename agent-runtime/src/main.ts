@@ -38,6 +38,7 @@ function loadConfig(): AgentConfig {
       .split(" ")
       .filter(Boolean),
     context,
+    contextBrief: process.env.CONTEXT_BRIEF || undefined,
     cursorApiKey: required("CURSOR_API_KEY"),
     githubToken: required("GITHUB_TOKEN"),
     gitUserName: required("GIT_USER_NAME"),
