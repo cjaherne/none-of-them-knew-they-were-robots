@@ -13,6 +13,7 @@ interface ApiStackProps extends cdk.StackProps {
   stage: string;
   tasksTable: dynamodb.Table;
   approvalsTable: dynamodb.Table;
+  logsTable: dynamodb.Table;
   taskQueue: sqs.Queue;
   audioBucket: s3.Bucket;
 }
@@ -31,6 +32,7 @@ export class ApiStack extends cdk.Stack {
       STAGE: props.stage,
       TASKS_TABLE: props.tasksTable.tableName,
       APPROVALS_TABLE: props.approvalsTable.tableName,
+      LOGS_TABLE: props.logsTable.tableName,
       TASK_QUEUE_URL: props.taskQueue.queueUrl,
       AUDIO_BUCKET: props.audioBucket.bucketName,
       OPENAI_API_KEY_SECRET_ARN: openaiSecret.secretArn,
@@ -86,6 +88,40 @@ export class ApiStack extends cdk.Stack {
       bundling: { externalModules: ["@aws-sdk/*"] },
     });
 
+    const logIngestFn = new lambdaNode.NodejsFunction(this, "LogIngestFn", {
+      entry: path.join(__dirname, "../../packages/api/src/logs.ts"),
+      handler: "ingestHandler",
+      runtime: lambda.Runtime.NODEJS_20_X,
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(10),
+      environment: commonEnv,
+      bundling: { externalModules: ["@aws-sdk/*"] },
+    });
+
+    const logQueryFn = new lambdaNode.NodejsFunction(this, "LogQueryFn", {
+      entry: path.join(__dirname, "../../packages/api/src/logs.ts"),
+      handler: "queryHandler",
+      runtime: lambda.Runtime.NODEJS_20_X,
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(10),
+      environment: commonEnv,
+      bundling: { externalModules: ["@aws-sdk/*"] },
+    });
+
+    const logHistoryFn = new lambdaNode.NodejsFunction(this, "LogHistoryFn", {
+      entry: path.join(__dirname, "../../packages/api/src/logs.ts"),
+      handler: "historyHandler",
+      runtime: lambda.Runtime.NODEJS_20_X,
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(10),
+      environment: commonEnv,
+      bundling: { externalModules: ["@aws-sdk/*"] },
+    });
+
+    props.logsTable.grantReadWriteData(logIngestFn);
+    props.logsTable.grantReadData(logQueryFn);
+    props.tasksTable.grantReadData(logHistoryFn);
+
     props.tasksTable.grantReadWriteData(voiceCommandFn);
     props.tasksTable.grantReadData(tasksFn);
     props.approvalsTable.grantReadWriteData(approvalsFn);
@@ -130,6 +166,25 @@ export class ApiStack extends cdk.Stack {
     statusResource.addMethod(
       "GET",
       new apigateway.LambdaIntegration(setupStatusFn)
+    );
+
+    const logsResource = this.api.root.addResource("logs");
+    logsResource.addMethod(
+      "GET",
+      new apigateway.LambdaIntegration(logQueryFn),
+    );
+
+    const internalResource = this.api.root.addResource("internal");
+    const internalLogResource = internalResource.addResource("log");
+    internalLogResource.addMethod(
+      "POST",
+      new apigateway.LambdaIntegration(logIngestFn),
+    );
+
+    const tasksHistoryResource = tasksResource.addResource("history");
+    tasksHistoryResource.addMethod(
+      "GET",
+      new apigateway.LambdaIntegration(logHistoryFn),
     );
 
     new cdk.CfnOutput(this, "ApiUrl", {

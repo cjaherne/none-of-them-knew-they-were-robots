@@ -3,7 +3,10 @@ import { execSync } from "child_process";
 import { promises as fs, access as accessCb } from "fs";
 import * as path from "path";
 import * as os from "os";
+import { createLogger } from "@agents/shared";
 import { loadSkillPack, SkillPack } from "./local-skill-loader";
+
+const log = createLogger("agent-runner");
 
 interface ResolvedAgent {
   bin: string;
@@ -871,7 +874,7 @@ export async function runPlanner(
   timeoutMs = 60_000,
 ): Promise<{ text: string; timedOut: boolean }> {
   const startTime = Date.now();
-  console.log(`[planner] Starting (timeout: ${(timeoutMs / 1000).toFixed(0)}s)`);
+  log.debug(`Planner starting (timeout: ${(timeoutMs / 1000).toFixed(0)}s)`);
 
   const result = await runAgentCli(prompt, workDir, timeoutMs);
 
@@ -887,9 +890,9 @@ export async function runPlanner(
   const timedOut = result.exitCode === 124;
 
   if (timedOut) {
-    console.log(`[planner] Timed out after ${elapsed}s`);
+    log.warn(`Planner timed out after ${elapsed}s`);
   } else {
-    console.log(`[planner] Completed in ${elapsed}s (exit ${result.exitCode})`);
+    log.debug(`Planner completed in ${elapsed}s (exit ${result.exitCode})`);
   }
 
   const parsed = parseAgentOutput(result.stdout);
@@ -1146,7 +1149,7 @@ async function writeDebugLog(
     await fs.writeFile(path.join(LOG_DIR, `${prefix}_stdout.txt`), data.stdout, "utf-8");
     await fs.writeFile(path.join(LOG_DIR, `${prefix}_stderr.txt`), data.stderr, "utf-8");
     await fs.writeFile(path.join(LOG_DIR, `${prefix}_exit.txt`), String(data.exitCode), "utf-8");
-    console.log(`  [debug] Logs written to ${LOG_DIR}/${prefix}_*`);
+    log.debug(`Debug logs written to ${LOG_DIR}/${prefix}_*`);
   } catch {
     // non-fatal
   }

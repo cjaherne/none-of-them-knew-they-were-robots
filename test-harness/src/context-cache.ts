@@ -1,6 +1,9 @@
 import * as path from "path";
 import { promises as fs } from "fs";
 import { execSync } from "child_process";
+import { createLogger } from "@agents/shared";
+
+const log = createLogger("context-cache");
 
 interface FileSummary {
   path: string;
@@ -119,12 +122,12 @@ async function summarizeWithOpenAI(
       try {
         return JSON.parse(content);
       } catch {
-        console.warn("[context-cache] OpenAI returned invalid JSON, falling back to heuristics");
+        log.warn("OpenAI returned invalid JSON, falling back to heuristics");
         return {};
       }
     }
   } catch (err) {
-    console.warn("[context-cache] OpenAI summarization failed:", err);
+    log.warn("OpenAI summarization failed", { err: String(err) });
   }
   return {};
 }
@@ -165,7 +168,7 @@ export async function loadOrBuildCache(workDir: string, techStack: string): Prom
     try {
       existing = JSON.parse(raw);
     } catch {
-      console.warn("[context-cache] Corrupt cache file, rebuilding");
+      log.warn("Corrupt cache file, rebuilding");
       existing = null;
     }
     if (existing && existing.version !== 2) existing = null;
@@ -187,13 +190,13 @@ export async function loadOrBuildCache(workDir: string, techStack: string): Prom
     filesToSummarize = [...changed.filter((f) => existingPaths.has(f)), ...newFiles];
 
     if (filesToSummarize.length === 0 && newFiles.length === 0) {
-      console.log(`[context-cache] Cache is current (sha: ${currentSha.slice(0, 8)})`);
+      log.debug(`Cache is current (sha: ${currentSha.slice(0, 8)})`);
       return existing;
     }
-    console.log(`[context-cache] Incremental update: ${filesToSummarize.length} changed, ${newFiles.length} new`);
+    log.debug(`Incremental update: ${filesToSummarize.length} changed, ${newFiles.length} new`);
   } else {
     filesToSummarize = allFiles;
-    console.log(`[context-cache] Full build: ${filesToSummarize.length} files`);
+    log.debug(`Full build: ${filesToSummarize.length} files`);
   }
 
   const fileContents: Array<{ path: string; content: string; lines: number }> = [];
@@ -241,7 +244,7 @@ export async function loadOrBuildCache(workDir: string, techStack: string): Prom
   await fs.writeFile(cachePath, JSON.stringify(cache, null, 2), "utf-8");
   await fs.writeFile(path.join(cacheDir, BRIEF_FILE), cache.architectureBrief, "utf-8");
 
-  console.log(`[context-cache] Saved: ${cache.files.length} files, sha ${currentSha.slice(0, 8)}`);
+  log.debug(`Saved: ${cache.files.length} files, sha ${currentSha.slice(0, 8)}`);
   return cache;
 }
 

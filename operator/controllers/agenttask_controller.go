@@ -35,8 +35,6 @@ type AgentTaskReconciler struct {
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 
 func (r *AgentTaskReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
 	var task agentsv1alpha1.AgentTask
 	if err := r.Get(ctx, req.NamespacedName, &task); err != nil {
 		if errors.IsNotFound(err) {
@@ -95,6 +93,7 @@ func (r *AgentTaskReconciler) handlePending(ctx context.Context, task *agentsv1a
 	}
 
 	logger.Info("created job for agent task", "job", jobName, "agent", task.Spec.AgentType)
+	postLogEntry(task.Spec.PipelineRef, "INFO", "operator:task", fmt.Sprintf("Task %s running (agent: %s)", task.Name, task.Spec.AgentType), "status", map[string]interface{}{"task": task.Name, "agent": task.Spec.AgentType, "job": jobName})
 	return ctrl.Result{}, nil
 }
 
@@ -124,6 +123,7 @@ func (r *AgentTaskReconciler) handleRunning(ctx context.Context, task *agentsv1a
 		}
 
 		logger.Info("agent task succeeded", "task", task.Name, "agent", task.Spec.AgentType)
+		postLogEntry(task.Spec.PipelineRef, "INFO", "operator:task", fmt.Sprintf("Task %s succeeded (agent: %s)", task.Name, task.Spec.AgentType), "output", map[string]interface{}{"task": task.Name, "agent": task.Spec.AgentType})
 		return ctrl.Result{}, nil
 	}
 
@@ -284,6 +284,7 @@ func (r *AgentTaskReconciler) failTask(ctx context.Context, task *agentsv1alpha1
 	if err := r.Status().Update(ctx, task); err != nil {
 		return ctrl.Result{}, err
 	}
+	postLogEntry(task.Spec.PipelineRef, "ERROR", "operator:task", fmt.Sprintf("Task %s failed: %s", task.Name, reason), "error", map[string]interface{}{"task": task.Name, "agent": task.Spec.AgentType, "reason": reason})
 	return ctrl.Result{}, nil
 }
 

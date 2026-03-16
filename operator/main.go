@@ -60,6 +60,11 @@ func main() {
 		resultsTable = os.Getenv("AGENT_RESULTS_TABLE")
 	}
 
+	if logURL := os.Getenv("LOG_API_URL"); logURL != "" {
+		controllers.SetLogAPIURL(logURL)
+		setupLog.Info("log API URL configured", "url", logURL)
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		HealthProbeBindAddress: probeAddr,

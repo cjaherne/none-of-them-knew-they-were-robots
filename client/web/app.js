@@ -5,6 +5,8 @@ let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
 let voiceEnabled = true;
+let currentLogLevelFilter = "INFO";
+const LOG_LEVEL_PRIORITY = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
 
 function speak(text) {
   if (!voiceEnabled || !window.speechSynthesis) return;
@@ -53,6 +55,15 @@ const pipelinePanel = document.getElementById("pipelinePanel");
 const pipelineTaskId = document.getElementById("pipelineTaskId");
 const stageDetail = document.getElementById("stageDetail");
 const taskLog = document.getElementById("taskLog");
+const logLevelSelect = document.getElementById("logLevelSelect");
+const tabLive = document.getElementById("tabLive");
+const tabHistory = document.getElementById("tabHistory");
+const historyView = document.getElementById("historyView");
+const historyList = document.getElementById("historyList");
+const historyDetail = document.getElementById("historyDetail");
+const historyBackBtn = document.getElementById("historyBackBtn");
+const historyDetailTitle = document.getElementById("historyDetailTitle");
+const historyDetailLogs = document.getElementById("historyDetailLogs");
 
 // --- Adapter creation ---
 function createAdapter() {
@@ -95,6 +106,7 @@ function applyFeatureVisibility() {
   approvalToggle.checked = localStorage.getItem("approvalEnabled") === "true";
 
   createAdapter();
+  syncLogLevel();
 })();
 
 function toggleBackendFields(type) {
@@ -627,6 +639,8 @@ function connectStream(taskId) {
 
 function handleStreamEvent(data) {
   try {
+    if (handleLogEntryEvent(data)) return;
+
     if (data.type === "error") {
       finalizeRunningIndicator();
       addLogEntry(data.message || "Connection lost", "error");
@@ -795,4 +809,161 @@ function escapeHtml(str) {
   const div = document.createElement("div");
   div.textContent = str;
   return div.innerHTML;
+}
+
+// --- Log level control ---
+async function syncLogLevel() {
+  if (!adapter) return;
+  try {
+    const { level } = await adapter.getLogLevel();
+    if (level) {
+      logLevelSelect.value = level;
+      currentLogLevelFilter = level;
+    }
+  } catch { /* ignore */ }
+}
+
+logLevelSelect.addEventListener("change", async () => {
+  const level = logLevelSelect.value;
+  currentLogLevelFilter = level;
+  try {
+    await adapter.setLogLevel(level);
+  } catch { /* ignore */ }
+});
+
+// --- Structured log entry rendering ---
+function addStructuredLogEntry(entry) {
+  if (LOG_LEVEL_PRIORITY[entry.level] < LOG_LEVEL_PRIORITY[currentLogLevelFilter]) return;
+
+  const el = document.createElement("div");
+  el.className = "log-entry";
+  el.dataset.level = entry.level;
+  el.dataset.category = entry.category || "";
+
+  if (entry.level === "ERROR") el.classList.add("error");
+  else if (entry.level === "WARN") el.style.borderLeftColor = "var(--warning)";
+  else if (entry.level === "INFO") el.classList.add("info");
+
+  const time = new Date(entry.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const catTag = entry.category ? `<span class="log-category-indicator">${entry.category}</span>` : "";
+
+  el.innerHTML = `<span class="time">${time}</span><span class="log-level-badge ${entry.level}">${entry.level}</span><span class="log-source-tag">${escapeHtml(entry.source)}</span>${catTag}<span class="log-msg">${escapeHtml(entry.message)}</span>`;
+  taskLog.appendChild(el);
+  el.scrollIntoView({ behavior: "smooth" });
+  return el;
+}
+
+// --- Handle log_entry events from SSE ---
+function handleLogEntryEvent(data) {
+  if (data.type === "log_entry") {
+    addStructuredLogEntry(data);
+    return true;
+  }
+  return false;
+}
+
+// --- Tab switching ---
+let activeTab = "live";
+
+tabLive.addEventListener("click", () => switchTab("live"));
+tabHistory.addEventListener("click", () => switchTab("history"));
+
+function switchTab(tab) {
+  activeTab = tab;
+  tabLive.classList.toggle("active", tab === "live");
+  tabHistory.classList.toggle("active", tab === "history");
+
+  const liveElements = [statusEl, approvalBanner, pipelinePanel, taskLog, document.getElementById("mobilePrompt")];
+  for (const el of liveElements) {
+    if (el) el.style.display = tab === "live" ? "" : "none";
+  }
+
+  if (tab === "history") {
+    historyView.classList.add("visible");
+    historyDetail.classList.remove("visible");
+    loadHistory();
+  } else {
+    historyView.classList.remove("visible");
+  }
+}
+
+// --- History view ---
+async function loadHistory() {
+  historyList.innerHTML = '<div style="color: var(--text-dim); font-family: var(--mono); font-size: 0.6875rem; padding: 0.5rem;">Loading...</div>';
+  try {
+    const tasks = await adapter.getTaskHistory(50, 0);
+    if (!tasks || tasks.length === 0) {
+      historyList.innerHTML = '<div style="color: var(--text-dim); font-family: var(--mono); font-size: 0.6875rem; padding: 0.5rem;">No past tasks found</div>';
+      return;
+    }
+    historyList.innerHTML = "";
+    for (const t of tasks) {
+      const item = document.createElement("div");
+      item.className = "history-item";
+      const promptExcerpt = (t.prompt || "").slice(0, 80) + ((t.prompt || "").length > 80 ? "..." : "");
+      const created = t.created_at ? relativeTime(t.created_at) : "";
+      item.innerHTML = `<span class="status-dot ${t.status}"></span><span class="prompt-excerpt">${escapeHtml(promptExcerpt)}</span><span class="history-meta">${escapeHtml(created)}</span>`;
+      item.addEventListener("click", () => loadTaskDetail(t.id, promptExcerpt));
+      historyList.appendChild(item);
+    }
+  } catch (err) {
+    historyList.innerHTML = `<div style="color: var(--danger); font-family: var(--mono); font-size: 0.6875rem; padding: 0.5rem;">Error: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function loadTaskDetail(taskId, title) {
+  historyList.style.display = "none";
+  historyDetail.classList.add("visible");
+  historyDetailTitle.textContent = title || taskId.slice(0, 8);
+  historyDetailLogs.innerHTML = '<div style="color: var(--text-dim); font-family: var(--mono); font-size: 0.6875rem; padding: 0.5rem;">Loading logs...</div>';
+
+  try {
+    const detail = await adapter.getTaskDetail(taskId);
+    historyDetailLogs.innerHTML = "";
+
+    if (detail.task) {
+      const meta = document.createElement("div");
+      meta.className = "log-entry info";
+      meta.innerHTML = `<span class="time">${new Date(detail.task.created_at).toLocaleString()}</span><span class="log-msg">Status: <strong>${detail.task.status}</strong>${detail.task.error ? " &mdash; " + escapeHtml(detail.task.error) : ""}</span>`;
+      historyDetailLogs.appendChild(meta);
+    }
+
+    if (detail.logs && detail.logs.length > 0) {
+      for (const log of detail.logs) {
+        const el = document.createElement("div");
+        el.className = "log-entry";
+        if (log.level === "ERROR") el.classList.add("error");
+        else if (log.level === "WARN") el.style.borderLeftColor = "var(--warning)";
+        else if (log.level === "INFO") el.classList.add("info");
+
+        const time = new Date(log.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+        const catTag = log.category ? `<span class="log-category-indicator">${log.category}</span>` : "";
+        el.innerHTML = `<span class="time">${time}</span><span class="log-level-badge ${log.level}">${log.level}</span><span class="log-source-tag">${escapeHtml(log.source)}</span>${catTag}<span class="log-msg">${escapeHtml(log.message)}</span>`;
+        historyDetailLogs.appendChild(el);
+      }
+    } else {
+      const empty = document.createElement("div");
+      empty.style.cssText = "color: var(--text-dim); font-family: var(--mono); font-size: 0.6875rem; padding: 0.5rem;";
+      empty.textContent = "No log entries for this task";
+      historyDetailLogs.appendChild(empty);
+    }
+  } catch (err) {
+    historyDetailLogs.innerHTML = `<div style="color: var(--danger); font-family: var(--mono); font-size: 0.6875rem; padding: 0.5rem;">Error: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+historyBackBtn.addEventListener("click", () => {
+  historyDetail.classList.remove("visible");
+  historyList.style.display = "";
+});
+
+function relativeTime(isoStr) {
+  const diff = Date.now() - new Date(isoStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
 }

@@ -1,3 +1,19 @@
+// --- Logging ---
+
+export type LogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR";
+export type LogCategory = "flow" | "input" | "output" | "status" | "error" | "system";
+
+export interface LogEntry {
+  id: string;
+  taskId?: string;
+  timestamp: string;
+  level: LogLevel;
+  source: string;
+  message: string;
+  metadata?: Record<string, unknown>;
+  category?: LogCategory;
+}
+
 // --- Task lifecycle ---
 
 export enum TaskStatus {

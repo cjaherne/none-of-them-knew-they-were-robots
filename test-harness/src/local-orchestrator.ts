@@ -1,6 +1,6 @@
 import * as path from "path";
 import { promises as fs } from "fs";
-import { TaskStatus, PipelineStage, PipelineStageAgent } from "@agents/shared";
+import { TaskStatus, PipelineStage, PipelineStageAgent, createLogger } from "@agents/shared";
 import { taskStore, MvpTask, PipelineMode, StageStatus, ApprovalResponse } from "./local-task-store";
 import {
   runAgent,
@@ -60,7 +60,7 @@ function getAvailableParallelDesigners(): StageDefinition[] {
   const available = PARALLEL_DESIGNERS.filter((s) => {
     const exists = skillPackExists(s.agent);
     if (!exists) {
-      console.warn(`[parallel] Skill pack not found for ${s.agent}, skipping`);
+      createLogger("orchestrator").warn(`Skill pack not found for ${s.agent}, skipping`);
     }
     return exists;
   });
@@ -230,11 +230,11 @@ async function mergeDesignOutputs(
       const merged = response.choices[0]?.message?.content;
       if (merged) {
         await fs.writeFile(path.join(workDir, "DESIGN.md"), merged, "utf-8");
-        console.log(`[merge] Merged ${designFiles.length} design documents via OpenAI`);
+        createLogger("orchestrator").info(`Merged ${designFiles.length} design documents via OpenAI`, undefined, "flow");
         return;
       }
     } catch (err) {
-      console.warn("[merge] OpenAI merge failed, using concatenation:", err);
+      createLogger("orchestrator").warn("OpenAI merge failed, using concatenation", { err: String(err) });
     }
   }
 
@@ -242,7 +242,7 @@ async function mergeDesignOutputs(
     `# ${d.agent} Design\n\n${d.content}`,
   ).join("\n\n---\n\n");
   await fs.writeFile(path.join(workDir, "DESIGN.md"), concatenated, "utf-8");
-  console.log(`[merge] Concatenated ${designFiles.length} design documents`);
+  createLogger("orchestrator").info(`Concatenated ${designFiles.length} design documents`, undefined, "flow");
 }
 
 function buildBigBossUserMessage(prompt: string, workDir: string, archBrief?: string): string {
@@ -287,16 +287,16 @@ async function planWithOpenAI(prompt: string, workDir: string, archBrief?: strin
     if (!content) return null;
 
     const parsed = JSON.parse(content);
-    console.log(`[bigboss] OpenAI ${hasContext ? "context broker" : "routing"} in ${elapsed}s: stages=${JSON.stringify(parsed.stages)}, complexity=${parsed.complexity}`);
+    createLogger("bigboss").info(`OpenAI ${hasContext ? "context broker" : "routing"} in ${elapsed}s`, { stages: parsed.stages, complexity: parsed.complexity }, "flow");
     if (parsed.agentBriefs) {
       for (const [agent, brief] of Object.entries(parsed.agentBriefs)) {
-        console.log(`[bigboss]   ${agent}: ${(brief as string).slice(0, 100)}...`);
+        createLogger("bigboss").debug(`Agent brief for ${agent}: ${(brief as string).slice(0, 100)}...`);
       }
     }
 
     return parseBigBossResponse(parsed);
   } catch (err) {
-    console.warn("[bigboss] OpenAI call failed:", err);
+    createLogger("bigboss").warn("OpenAI call failed", { err: String(err) }, "error");
     return null;
   }
 }
@@ -311,19 +311,19 @@ async function planWithAgentCli(
     const { text, timedOut } = await runPlanner(fullPrompt, workDir, pipelineId, 60_000);
 
     if (timedOut) {
-      console.warn("[bigboss] CLI timed out, falling back to full pipeline");
+      createLogger("bigboss").warn("CLI timed out, falling back to full pipeline", undefined, "status");
       return null;
     }
 
     const jsonMatch = text.match(/\{[\s\S]*"stages"[\s\S]*\}/);
     if (!jsonMatch) {
-      console.warn("[bigboss] No JSON found in CLI output");
+      createLogger("bigboss").warn("No JSON found in CLI output");
       return null;
     }
 
     return parseBigBossResponse(JSON.parse(jsonMatch[0]));
   } catch (err) {
-    console.warn("[bigboss] CLI planning failed:", err);
+    createLogger("bigboss").warn("CLI planning failed", { err: String(err) }, "error");
     return null;
   }
 }
@@ -350,7 +350,7 @@ function parseBigBossResponse(parsed: Record<string, unknown>): BigBossResult | 
     if (availableDesigners.length > 1) {
       ordered = [...availableDesigners, ...FULL_STAGES.filter((d) => d.category !== "design" && stageNames.includes(d.name === "validation" ? "testing" : d.name))];
     } else {
-      console.log(`[bigboss] Only ${availableDesigners.length} designer(s) available, downgrading to sequential`);
+      createLogger("bigboss").info(`Only ${availableDesigners.length} designer(s) available, downgrading to sequential`, undefined, "flow");
       effectiveParallel = false;
       ordered = [];
       for (const def of FULL_STAGES) {
@@ -375,7 +375,7 @@ function parseBigBossResponse(parsed: Record<string, unknown>): BigBossResult | 
 
   const stageGroups = groupStages(ordered, effectiveParallel);
 
-  console.log(`[bigboss] Decided stages: ${ordered.map((s) => s.name).join(" -> ")} (complexity: ${complexity}, parallel: ${effectiveParallel}, briefs: ${Object.keys(agentBriefs).length})`);
+  createLogger("bigboss").info(`BigBoss routed to stages: ${ordered.map((s) => s.name).join(" -> ")}`, { complexity, parallel: effectiveParallel, briefCount: Object.keys(agentBriefs).length }, "flow");
   return { stages: ordered, stageGroups, complexity, agentBriefs, parallelDesign: effectiveParallel };
 }
 
@@ -416,11 +416,11 @@ async function bigBossSummarize(
       const elapsed = ((Date.now() - start) / 1000).toFixed(1);
       const summary = response.choices[0]?.message?.content?.trim();
       if (summary) {
-        console.log(`[bigboss] Summarized ${filename} in ${elapsed}s`);
+        createLogger("bigboss").debug(`Summarized ${filename} in ${elapsed}s`);
         return summary;
       }
     } catch (err) {
-      console.warn(`[bigboss] Summarization failed for ${filename}:`, err);
+      createLogger("bigboss").warn(`Summarization failed for ${filename}`, { err: String(err) });
     }
   }
 
@@ -449,7 +449,7 @@ async function planWithBigBoss(
   if (process.env.OPENAI_API_KEY) {
     const result = await planWithOpenAI(prompt, workDir, archBrief);
     if (result) return result;
-    console.log("[bigboss] OpenAI failed, trying agent CLI fallback");
+    createLogger("bigboss").info("OpenAI failed, trying agent CLI fallback", undefined, "flow");
   }
   return planWithAgentCli(prompt, workDir, pipelineId);
 }
@@ -460,6 +460,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
   const skillsRoot = resolveSkillsRoot();
   const upstreamResults: AgentRunResult[] = [];
   const pid = task.id.slice(0, 8);
+  const log = createLogger("orchestrator", task.id);
 
   const abortController = new AbortController();
   taskStore.registerAbort(task.id, abortController);
@@ -480,7 +481,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
   let workDir: string;
   try {
     workDir = await setupWorkspace(baseConfig as AgentRunConfig);
-    console.log(`[pipeline ${pid}] workspace: ${workDir}, branch: ${task.branch}`);
+    log.info(`Workspace ready: ${workDir}, branch: ${task.branch}`, { workDir, branch: task.branch }, "status");
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     taskStore.updateTaskStatus(task.id, TaskStatus.Failed, `Workspace setup failed: ${message}`);
@@ -494,9 +495,9 @@ export async function runPipeline(task: MvpTask): Promise<void> {
     const brief = buildContextBrief("planning", workDir);
     const cache = await loadOrBuildCache(workDir, brief.techStack);
     cacheBrief = getCacheBrief(cache);
-    console.log(`[pipeline ${pid}] Context cache: ${cache.files.length} files indexed`);
+    log.info(`Context cache: ${cache.files.length} files indexed`, { files: cache.files.length }, "status");
   } catch (err) {
-    console.warn(`[pipeline ${pid}] Context cache build failed (non-fatal):`, err);
+    log.warn("Context cache build failed (non-fatal)", { err: String(err) });
   }
 
   let stages: StageDefinition[];
@@ -513,10 +514,10 @@ export async function runPipeline(task: MvpTask): Promise<void> {
     } else {
       stages = [...FULL_STAGES];
     }
-    console.log(`[pipeline ${pid}] mode=auto, stages: ${stages.map((s) => s.name).join(" -> ")}, complexity: ${complexity}`);
+    log.info(`BigBoss routed to stages: ${stages.map((s) => s.name).join(" -> ")}`, { mode: "auto", complexity }, "flow");
   } else {
     stages = stagesForMode(task.pipelineMode);
-    console.log(`[pipeline ${pid}] mode=${task.pipelineMode}, stages: ${stages.map((s) => s.name).join(" -> ")}`);
+    log.info(`Pipeline stages: ${stages.map((s) => s.name).join(" -> ")}`, { mode: task.pipelineMode }, "flow");
   }
 
   const initialStages: StageStatus[] = stages.map((s) => ({
@@ -534,7 +535,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
 
   while (groupIndex < stageGroups.length) {
     if (signal.aborted) {
-      console.log(`[pipeline ${pid}] Cancelled by user`);
+      log.warn("Pipeline cancelled by user", undefined, "status");
       taskStore.cleanupAbort(task.id);
       return;
     }
@@ -543,7 +544,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
 
     if (group.parallel && group.stageDefs.length > 1) {
       // --- Parallel stage execution ---
-      console.log(`[pipeline ${pid}] Running ${group.stageDefs.length} stages in parallel: ${group.stageDefs.map((s) => s.name).join(", ")}`);
+      log.info(`Running ${group.stageDefs.length} stages in parallel: ${group.stageDefs.map((s) => s.name).join(", ")}`, { agents: group.stageDefs.map((s) => s.agent) }, "status");
       taskStore.emit_log(task.id, `Running ${group.stageDefs.length} agents in parallel: ${group.stageDefs.map((s) => s.agent).join(", ")}`);
 
       for (const s of group.stageDefs) {
@@ -578,7 +579,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
       const parallelResults = await Promise.all(parallelPromises);
 
       if (signal.aborted) {
-        console.log(`[pipeline ${pid}] Cancelled during parallel stages`);
+        log.warn("Cancelled during parallel stages", undefined, "status");
         taskStore.cleanupAbort(task.id);
         return;
       }
@@ -625,7 +626,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
         if (task.requireDesignApproval) {
           const summary = await bigBossSummarize(workDir, "DESIGN.md", "design");
           const designPreview = await readDesignPreview(workDir);
-          console.log(`[pipeline ${pid}] Waiting for design approval (post-merge)...`);
+          log.info("Design approval requested (post-merge)", undefined, "flow");
 
           const approval: ApprovalResponse = await taskStore.requestApproval(
             task.id, summary, { approvalType: "design", designPreview },
@@ -653,6 +654,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
     } else {
       // --- Sequential stage execution (single stage in group) ---
       const stage = group.stageDefs[0];
+      log.info(`Stage ${stage.name} started (agent: ${stage.agent})`, { stage: stage.name, agent: stage.agent }, "status");
 
       taskStore.updateStage(task.id, stage.name, {
         status: "running",
@@ -686,7 +688,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
         }, signal);
 
         if (signal.aborted) {
-          console.log(`[pipeline ${pid}] Cancelled during ${stage.name}`);
+          log.warn(`Cancelled during ${stage.name}`, undefined, "status");
           taskStore.cleanupAbort(task.id);
           return;
         }
@@ -707,17 +709,18 @@ export async function runPipeline(task: MvpTask): Promise<void> {
             const notes = await readCodingNotes(workDir);
             if (notes) {
               stageUpdate.notes = notes;
-              console.log(`[pipeline ${pid}] CODING_NOTES.md found (${notes.length} chars)`);
+              log.debug(`CODING_NOTES.md found (${notes.length} chars)`);
             }
           }
 
           taskStore.updateStage(task.id, stage.name, stageUpdate);
+          log.info(`Stage ${stage.name} completed: ${result.filesModified?.length ?? 0} files, ${(result.durationMs / 1000).toFixed(1)}s, $${result.estimatedCost?.toFixed(4) ?? "N/A"}`, { stage: stage.name, files: result.filesModified?.length ?? 0, durationMs: result.durationMs, cost: result.estimatedCost }, "output");
 
           // --- Design approval gate ---
           if (stage.category === "design" && task.requireDesignApproval) {
             const summary = await bigBossSummarize(workDir, "DESIGN.md", "design");
             const designPreview = await readDesignPreview(workDir);
-            console.log(`[pipeline ${pid}] Waiting for design approval...`);
+            log.info("Design approval requested", undefined, "flow");
 
             const approval: ApprovalResponse = await taskStore.requestApproval(
               task.id, summary, { approvalType: "design", designPreview },
@@ -734,20 +737,20 @@ export async function runPipeline(task: MvpTask): Promise<void> {
             if (approval.action === "revise" && designLoops < MAX_DESIGN_LOOPS) {
               designLoops++;
               designFeedback = approval.feedback || "User requested design changes.";
-              console.log(`[pipeline ${pid}] Design revision requested (loop ${designLoops}): ${designFeedback}`);
+              log.info(`Design revision requested (loop ${designLoops})`, { feedback: designFeedback }, "flow");
               taskStore.emit_log(task.id, `Design revision ${designLoops}: ${designFeedback}`);
               taskStore.updateStage(task.id, stage.name, { status: "pending" as const });
               continue;
             }
 
-            console.log(`[pipeline ${pid}] Design approved, continuing`);
+            log.info("User approved design", undefined, "flow");
           }
 
           // --- Coding: lint check ---
           if (stage.category === "coding") {
             const lint = await runLintCheck(workDir);
             if (lint && !lint.passed) {
-              console.log(`[pipeline ${pid}] Lint/build failed, running fix-up pass...`);
+              log.warn("Lint/build failed, running fix-up pass...", { command: lint.command }, "status");
               taskStore.emit_log(task.id, `Lint check failed (${lint.command}), running fix-up pass...`);
 
               const fixConfig: AgentRunConfig = {
@@ -765,14 +768,14 @@ export async function runPipeline(task: MvpTask): Promise<void> {
 
               const retryLint = await runLintCheck(workDir);
               if (retryLint && !retryLint.passed) {
-                console.warn(`[pipeline ${pid}] Lint still failing after fix-up pass`);
+                log.warn("Lint still failing after fix-up pass", { output: retryLint.output.slice(0, 200) }, "status");
                 taskStore.emit_log(task.id, `Lint still failing after fix-up: ${retryLint.output.slice(0, 200)}`);
               } else {
-                console.log(`[pipeline ${pid}] Lint/build clean after fix-up pass`);
+                log.info("Lint/build clean after fix-up pass", undefined, "status");
                 taskStore.emit_log(task.id, "Code compiles cleanly after fix-up pass.");
               }
             } else if (lint?.passed) {
-              console.log(`[pipeline ${pid}] Lint/build passed (${lint.command})`);
+              log.info(`Lint/build passed (${lint.command})`, undefined, "status");
               taskStore.emit_log(task.id, `Code compiles cleanly (${lint.command}).`);
             }
           }
@@ -782,7 +785,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
             const notes = await readCodingNotes(workDir);
             if (notes && designLoops < MAX_DESIGN_LOOPS) {
               const feedbackSummary = await bigBossSummarize(workDir, "CODING_NOTES.md", "feedback");
-              console.log(`[pipeline ${pid}] Presenting coding feedback for review...`);
+              log.info("Presenting coding feedback for review", undefined, "flow");
 
               const feedbackApproval: ApprovalResponse = await taskStore.requestApproval(
                 task.id, feedbackSummary,
@@ -794,7 +797,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
               if (feedbackApproval.action === "redesign") {
                 designLoops++;
                 designFeedback = notes;
-                console.log(`[pipeline ${pid}] Re-running design with coding feedback (loop ${designLoops})`);
+                log.info(`Re-running design with coding feedback (loop ${designLoops})`, undefined, "flow");
                 taskStore.emit_log(task.id, `Re-running design with coding feedback (loop ${designLoops})`);
 
                 const designGroupIdx = stageGroups.findIndex((g) => g.stageDefs.some((s) => s.category === "design"));
@@ -807,7 +810,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
                   continue;
                 }
               }
-              console.log(`[pipeline ${pid}] Continuing to next stage (feedback acknowledged)`);
+              log.info("Continuing to next stage (feedback acknowledged)", undefined, "flow");
             }
           }
         } else {
@@ -849,11 +852,15 @@ export async function runPipeline(task: MvpTask): Promise<void> {
   if (task.repo) {
     const push = pushBranch(workDir, task.branch);
     if (push.pushed) {
-      console.log(`[pipeline ${pid}] pushed ${task.branch} to origin`);
+      log.info(`Pushed ${task.branch} to origin`, undefined, "output");
     } else {
-      console.warn(`[pipeline ${pid}] push failed: ${push.error}`);
+      log.warn(`Push failed: ${push.error}`, undefined, "error");
     }
   }
+
+  const totalFiles = upstreamResults.reduce((n, r) => n + (r.filesModified?.length ?? 0), 0);
+  const totalMs = upstreamResults.reduce((n, r) => n + r.durationMs, 0);
+  log.info(`Pipeline complete: ${totalFiles} files modified, ${(totalMs / 1000).toFixed(1)}s total`, { totalFiles, totalMs }, "output");
 
   taskStore.cleanupAbort(task.id);
   taskStore.updateTaskStatus(task.id, TaskStatus.Completed);

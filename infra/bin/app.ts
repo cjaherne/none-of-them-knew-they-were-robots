@@ -33,6 +33,7 @@ const eks = new EksStack(app, `${prefix}-eks`, {
 const websocket = new WebSocketStack(app, `${prefix}-websocket`, {
   stage,
   connectionsTable: storage.connectionsTable,
+  logsTable: storage.logsTable,
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION,
@@ -43,6 +44,7 @@ new ApiStack(app, `${prefix}-api`, {
   stage,
   tasksTable: storage.tasksTable,
   approvalsTable: storage.approvalsTable,
+  logsTable: storage.logsTable,
   taskQueue: storage.taskQueue,
   audioBucket: storage.audioBucket,
   env: {
