@@ -1171,11 +1171,13 @@ function runAgentCli(
   onEvent?: AgentEventCallback,
   abortSignal?: AbortSignal,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const model = process.env.CURSOR_AGENT_MODEL || "auto";
   const args = [
     ...AGENT.args,
     "-p",
     "--force",
     "--trust",
+    "--model", model,
     "--workspace", workDir,
     "--output-format", "stream-json",
   ];
