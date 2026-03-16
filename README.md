@@ -446,6 +446,7 @@ cp .env.local.example .env.local
 | `PORT` | Override the default port (3000) | Optional |
 | `SKILLS_ROOT` | Override the skills directory path | Optional |
 | `CURSOR_CLI` | Override the Cursor agent CLI path | Optional |
+| `CURSOR_AGENT_MODEL` | Model for the Cursor Agent CLI (default: `auto`, to avoid Opus usage limits) | Optional |
 
 ## Licence
 
