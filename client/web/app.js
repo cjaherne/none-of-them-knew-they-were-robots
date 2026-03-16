@@ -1,5 +1,6 @@
 // --- State ---
-let currentEventSource = null;
+let adapter = null;
+let currentStreamHandle = null;
 let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
@@ -15,11 +16,17 @@ function speak(text) {
 }
 
 // --- DOM refs ---
-const settingsToggle = document.getElementById("settingsToggle");
-const settingsPanel = document.getElementById("settingsPanel");
+const sidebarToggle = document.getElementById("sidebarToggle");
+const sidebar = document.getElementById("sidebar");
 const backendSelect = document.getElementById("backendSelect");
-const customUrl = document.getElementById("customUrl");
+const localUrl = document.getElementById("localUrl");
+const localUrlGroup = document.getElementById("localUrlGroup");
+const cloudRestUrl = document.getElementById("cloudRestUrl");
+const cloudWsUrl = document.getElementById("cloudWsUrl");
+const cloudUrlGroup = document.getElementById("cloudUrlGroup");
+const localConfig = document.getElementById("localConfig");
 const textInput = document.getElementById("textInput");
+const textInputMobile = document.getElementById("textInputMobile");
 const workspaceInput = document.getElementById("workspaceInput");
 const repoInput = document.getElementById("repoInput");
 const baseBranchInput = document.getElementById("baseBranchInput");
@@ -38,19 +45,45 @@ const revisionInput = document.getElementById("revisionInput");
 const approvalActions = document.getElementById("approvalActions");
 const cancelBtn = document.getElementById("cancelBtn");
 const sendBtn = document.getElementById("sendBtn");
+const sendBtnMobile = document.getElementById("sendBtnMobile");
 const micBtn = document.getElementById("micBtn");
+const micBtnMobile = document.getElementById("micBtnMobile");
 const statusEl = document.getElementById("status");
 const pipelinePanel = document.getElementById("pipelinePanel");
 const pipelineTaskId = document.getElementById("pipelineTaskId");
 const stageDetail = document.getElementById("stageDetail");
 const taskLog = document.getElementById("taskLog");
 
+// --- Adapter creation ---
+function createAdapter() {
+  const type = backendSelect.value; // "local" | "cloud"
+  if (type === "cloud") {
+    const restBase = cloudRestUrl.value.trim() || "https://localhost";
+    const ws = cloudWsUrl.value.trim() || "";
+    adapter = new BackendAdapter("cloud", restBase, ws);
+  } else {
+    const base = localUrl.value.trim() || window.location.origin;
+    adapter = new BackendAdapter("local", base);
+  }
+  applyFeatureVisibility();
+}
+
+function applyFeatureVisibility() {
+  if (!adapter) return;
+  const isLocal = adapter.type === "local";
+  localConfig.style.display = isLocal ? "" : "none";
+  cancelBtn.style.display = "none"; // always hidden until a task is running
+}
+
 // --- Init ---
 (function init() {
-  const saved = localStorage.getItem("backend") || "local";
-  backendSelect.value = saved;
-  customUrl.value = localStorage.getItem("customUrl") || "";
-  customUrl.style.display = saved === "custom" ? "block" : "none";
+  const savedBackend = localStorage.getItem("backend") || "local";
+  backendSelect.value = savedBackend;
+  localUrl.value = localStorage.getItem("localUrl") || "";
+  cloudRestUrl.value = localStorage.getItem("cloudRestUrl") || "";
+  cloudWsUrl.value = localStorage.getItem("cloudWsUrl") || "";
+  toggleBackendFields(savedBackend);
+
   workspaceInput.value = localStorage.getItem("workspace") || "";
   repoInput.value = localStorage.getItem("repo") || "";
   baseBranchInput.value = localStorage.getItem("baseBranch") || "";
@@ -60,20 +93,45 @@ const taskLog = document.getElementById("taskLog");
   voiceEnabled = savedVoice !== "false";
   voiceToggle.checked = voiceEnabled;
   approvalToggle.checked = localStorage.getItem("approvalEnabled") === "true";
+
+  createAdapter();
 })();
 
-// --- Settings ---
-settingsToggle.addEventListener("click", () => {
-  settingsPanel.classList.toggle("visible");
+function toggleBackendFields(type) {
+  if (type === "cloud") {
+    localUrlGroup.style.display = "none";
+    cloudUrlGroup.style.display = "";
+  } else {
+    localUrlGroup.style.display = "";
+    cloudUrlGroup.style.display = "none";
+  }
+}
+
+// --- Settings / persistence ---
+sidebarToggle.addEventListener("click", () => {
+  sidebar.classList.toggle("mobile-open");
 });
 
 backendSelect.addEventListener("change", () => {
-  localStorage.setItem("backend", backendSelect.value);
-  customUrl.style.display = backendSelect.value === "custom" ? "block" : "none";
+  const val = backendSelect.value;
+  localStorage.setItem("backend", val);
+  toggleBackendFields(val);
+  createAdapter();
 });
 
-customUrl.addEventListener("change", () => {
-  localStorage.setItem("customUrl", customUrl.value.trim());
+localUrl.addEventListener("change", () => {
+  localStorage.setItem("localUrl", localUrl.value.trim());
+  createAdapter();
+});
+
+cloudRestUrl.addEventListener("change", () => {
+  localStorage.setItem("cloudRestUrl", cloudRestUrl.value.trim());
+  createAdapter();
+});
+
+cloudWsUrl.addEventListener("change", () => {
+  localStorage.setItem("cloudWsUrl", cloudWsUrl.value.trim());
+  createAdapter();
 });
 
 workspaceInput.addEventListener("change", () => {
@@ -105,6 +163,11 @@ approvalToggle.addEventListener("change", () => {
   localStorage.setItem("approvalEnabled", approvalToggle.checked);
 });
 
+// --- Sync desktop ↔ mobile prompt ---
+textInput.addEventListener("input", () => { textInputMobile.value = textInput.value; });
+textInputMobile.addEventListener("input", () => { textInput.value = textInputMobile.value; });
+
+// --- Approval ---
 let pendingApprovalTaskId = null;
 let currentRunningTaskId = null;
 
@@ -183,13 +246,8 @@ function handleApprovalRequired(data) {
 
 async function sendApprovalResponse(response) {
   if (!pendingApprovalTaskId) return;
-  const apiBase = getApiBase();
   try {
-    await fetch(`${apiBase}/tasks/${pendingApprovalTaskId}/approve`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(response),
-    });
+    await adapter.approve(pendingApprovalTaskId, response);
   } catch (err) {
     addLogEntry(`Approval error: ${err.message}`, "error");
   }
@@ -210,12 +268,8 @@ async function sendApprovalResponse(response) {
 
 cancelBtn.addEventListener("click", async () => {
   if (!currentRunningTaskId) return;
-  const apiBase = getApiBase();
   try {
-    await fetch(`${apiBase}/tasks/${currentRunningTaskId}/cancel`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-    });
+    await adapter.cancel(currentRunningTaskId);
     speak("Pipeline cancelled.");
     statusEl.textContent = "Pipeline cancelled";
     cancelBtn.style.display = "none";
@@ -224,60 +278,56 @@ cancelBtn.addEventListener("click", async () => {
   }
 });
 
-function getApiBase() {
-  if (backendSelect.value === "custom") {
-    return customUrl.value.trim().replace(/\/$/, "");
-  }
-  return window.location.origin;
+// --- Send command ---
+function getCommandText() {
+  return (textInput.value || textInputMobile.value || "").trim();
 }
 
-// --- Send command ---
 sendBtn.addEventListener("click", sendTextCommand);
+sendBtnMobile.addEventListener("click", sendTextCommand);
+
 textInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    sendTextCommand();
-  }
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendTextCommand(); }
+});
+textInputMobile.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendTextCommand(); }
 });
 
 async function sendTextCommand() {
-  const text = textInput.value.trim();
+  const text = getCommandText();
   if (!text) return;
 
   sendBtn.disabled = true;
+  sendBtnMobile.disabled = true;
   statusEl.textContent = "Sending command...";
 
-  const repo = repoInput.value.trim() || undefined;
-  const workspace = workspaceInput.value.trim() || undefined;
-  const baseBranch = baseBranchInput.value.trim() || undefined;
-  const branch = branchInput.value.trim() || undefined;
-  const pipelineMode = pipelineModeSelect.value || "full";
-  const requireApproval = approvalToggle.checked;
-  const apiBase = getApiBase();
+  const params = { text };
+
+  if (adapter.isFeatureSupported("workspace")) {
+    const repo = repoInput.value.trim() || undefined;
+    const workspace = workspaceInput.value.trim() || undefined;
+    const baseBranch = baseBranchInput.value.trim() || undefined;
+    const branch = branchInput.value.trim() || undefined;
+    const pipelineMode = pipelineModeSelect.value || "full";
+    const requireApproval = approvalToggle.checked;
+    Object.assign(params, { repo, workspace, baseBranch, branch, pipelineMode, requireApproval });
+  }
 
   try {
-    const res = await fetch(`${apiBase}/voice-command`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, repo, workspace, baseBranch, branch, pipelineMode, requireApproval }),
-    });
-    const data = await res.json();
-
-    if (res.ok) {
-      addLogEntry(`Task ${data.taskId.slice(0, 8)}... queued`, "pending");
-      statusEl.textContent = `Pipeline running for ${data.taskId.slice(0, 8)}...`;
-      speak("Starting pipeline. Analyzing your request.");
-      showPipeline(data.taskId);
-      connectSSE(apiBase, data.taskId);
-    } else {
-      addLogEntry(`Error: ${data.error}`, "error");
-      statusEl.textContent = "Command failed";
-    }
+    const result = await adapter.submitCommand(params);
+    addLogEntry(`Task ${result.taskId.slice(0, 8)}... queued`, "pending");
+    statusEl.textContent = `Pipeline running for ${result.taskId.slice(0, 8)}...`;
+    speak("Starting pipeline. Analyzing your request.");
+    showPipeline(result.taskId);
+    connectStream(result.taskId);
   } catch (err) {
-    addLogEntry(`Network error: ${err.message}`, "error");
-    statusEl.textContent = "Connection failed -- is the test harness running?";
+    addLogEntry(`Error: ${err.message}`, "error");
+    statusEl.textContent = adapter.type === "local"
+      ? "Connection failed -- is the test harness running?"
+      : `Error: ${err.message}`;
   } finally {
     sendBtn.disabled = false;
+    sendBtnMobile.disabled = false;
   }
 }
 
@@ -286,13 +336,17 @@ const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecogni
 let speechRecognition = null;
 
 micBtn.addEventListener("click", toggleVoiceInput);
+micBtnMobile.addEventListener("click", toggleVoiceInput);
 
 function toggleVoiceInput() {
-  if (isRecording) {
-    stopVoiceInput();
-  } else {
-    startVoiceInput();
-  }
+  if (isRecording) { stopVoiceInput(); } else { startVoiceInput(); }
+}
+
+function setMicRecording(on) {
+  isRecording = on;
+  const method = on ? "add" : "remove";
+  micBtn.classList[method]("recording");
+  micBtnMobile.classList[method]("recording");
 }
 
 function startVoiceInput() {
@@ -307,8 +361,7 @@ function startVoiceInput() {
   speechRecognition.lang = "en-US";
 
   speechRecognition.onstart = () => {
-    isRecording = true;
-    micBtn.classList.add("recording");
+    setMicRecording(true);
     statusEl.textContent = "Listening...";
   };
 
@@ -318,6 +371,7 @@ function startVoiceInput() {
       transcript += event.results[i][0].transcript;
     }
     textInput.value = transcript;
+    textInputMobile.value = transcript;
 
     if (event.results[0]?.isFinal) {
       statusEl.textContent = `Heard: "${transcript.slice(0, 60)}${transcript.length > 60 ? "..." : ""}"`;
@@ -325,10 +379,8 @@ function startVoiceInput() {
   };
 
   speechRecognition.onend = () => {
-    isRecording = false;
-    micBtn.classList.remove("recording");
-
-    const text = textInput.value.trim();
+    setMicRecording(false);
+    const text = getCommandText();
     if (text) {
       speak(`Sending: ${text.slice(0, 80)}`);
       setTimeout(() => sendTextCommand(), 600);
@@ -338,8 +390,7 @@ function startVoiceInput() {
   };
 
   speechRecognition.onerror = (event) => {
-    isRecording = false;
-    micBtn.classList.remove("recording");
+    setMicRecording(false);
     if (event.error === "not-allowed") {
       statusEl.textContent = "Microphone access denied";
     } else {
@@ -357,8 +408,7 @@ function stopVoiceInput() {
     mediaRecorder.stop();
     mediaRecorder.stream.getTracks().forEach((t) => t.stop());
   }
-  isRecording = false;
-  micBtn.classList.remove("recording");
+  setMicRecording(false);
 }
 
 async function startRecordingFallback() {
@@ -371,8 +421,7 @@ async function startRecordingFallback() {
     mediaRecorder.onstop = handleRecordingFallback;
 
     mediaRecorder.start();
-    isRecording = true;
-    micBtn.classList.add("recording");
+    setMicRecording(true);
     statusEl.textContent = "Recording... (click again to stop)";
   } catch {
     statusEl.textContent = "Microphone access denied";
@@ -380,46 +429,42 @@ async function startRecordingFallback() {
 }
 
 async function handleRecordingFallback() {
-  isRecording = false;
-  micBtn.classList.remove("recording");
+  setMicRecording(false);
   statusEl.textContent = "Transcribing...";
 
   const blob = new Blob(audioChunks, { type: "audio/webm" });
   const reader = new FileReader();
   reader.onloadend = async () => {
     const base64 = reader.result.split(",")[1];
-    const apiBase = getApiBase();
+    const params = { audioBase64: base64 };
+
+    if (adapter.isFeatureSupported("workspace")) {
+      Object.assign(params, {
+        repo: repoInput.value.trim() || undefined,
+        workspace: workspaceInput.value.trim() || undefined,
+        baseBranch: baseBranchInput.value.trim() || undefined,
+        branch: branchInput.value.trim() || undefined,
+        pipelineMode: pipelineModeSelect.value || "full",
+        requireApproval: approvalToggle.checked,
+      });
+    }
 
     try {
-      const res = await fetch(`${apiBase}/voice-command`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          audioBase64: base64,
-          repo: repoInput.value.trim() || undefined,
-          workspace: workspaceInput.value.trim() || undefined,
-          baseBranch: baseBranchInput.value.trim() || undefined,
-          branch: branchInput.value.trim() || undefined,
-          pipelineMode: pipelineModeSelect.value || "full",
-          requireApproval: approvalToggle.checked,
-        }),
-      });
-      const data = await res.json();
-
-      if (res.ok) {
-        if (data.transcript) textInput.value = data.transcript;
-        addLogEntry(`Task ${data.taskId.slice(0, 8)}... queued (voice)`, "pending");
-        statusEl.textContent = `Pipeline running for ${data.taskId.slice(0, 8)}...`;
-        speak("Starting pipeline. Analyzing your request.");
-        showPipeline(data.taskId);
-        connectSSE(apiBase, data.taskId);
-      } else {
-        addLogEntry(`Error: ${data.error}`, "error");
-        statusEl.textContent = data.error || "Command failed";
+      const result = await adapter.submitCommand(params);
+      if (result.transcript) {
+        textInput.value = result.transcript;
+        textInputMobile.value = result.transcript;
       }
+      addLogEntry(`Task ${result.taskId.slice(0, 8)}... queued (voice)`, "pending");
+      statusEl.textContent = `Pipeline running for ${result.taskId.slice(0, 8)}...`;
+      speak("Starting pipeline. Analyzing your request.");
+      showPipeline(result.taskId);
+      connectStream(result.taskId);
     } catch (err) {
-      addLogEntry(`Network error: ${err.message}`, "error");
-      statusEl.textContent = "Connection failed -- is the test harness running?";
+      addLogEntry(`Error: ${err.message}`, "error");
+      statusEl.textContent = adapter.type === "local"
+        ? "Connection failed -- is the test harness running?"
+        : `Error: ${err.message}`;
     }
   };
   reader.readAsDataURL(blob);
@@ -436,7 +481,13 @@ function showPipeline(taskId) {
   lastStageCount = 0;
   lastStagesSnapshot = [];
   currentRunningTaskId = taskId;
-  cancelBtn.style.display = "inline-block";
+
+  if (adapter.isFeatureSupported("cancel")) {
+    cancelBtn.style.display = "inline-block";
+  } else {
+    cancelBtn.style.display = "none";
+  }
+
   approvalBanner.classList.remove("visible");
   finalizeRunningIndicator();
 }
@@ -492,7 +543,6 @@ function renderAllStageDetails(stages) {
 
   let html = "";
 
-  // Cumulative summary
   const completedStages = stages.filter((s) => s.status === "succeeded" || s.status === "failed");
   const totalFiles = new Set();
   let totalDuration = 0;
@@ -520,7 +570,6 @@ function renderAllStageDetails(stages) {
   }
   html += `</div>`;
 
-  // Per-stage cards
   for (const s of activeStages) {
     html += `<div class="stage-card ${s.status}">`;
     html += `<div class="stage-card-header">`;
@@ -545,7 +594,6 @@ function renderAllStageDetails(stages) {
     html += `</div>`;
   }
 
-  // Feedback / coding notes
   const notesStage = stages.find((s) => s.notes);
   if (notesStage) {
     html += `<div class="feedback-card">`;
@@ -560,160 +608,149 @@ function renderAllStageDetails(stages) {
   stageDetail.innerHTML = html;
 }
 
-// --- SSE connection ---
+// --- Streaming ---
 let activeRunningEntry = null;
 let activeRunningStage = null;
 let activeRunningStart = null;
 
-function connectSSE(apiBase, taskId) {
-  if (currentEventSource) {
-    currentEventSource.close();
+function connectStream(taskId) {
+  if (currentStreamHandle) {
+    currentStreamHandle.close();
   }
 
   activeRunningEntry = null;
   activeRunningStage = null;
   activeRunningStart = null;
 
-  const url = `${apiBase}/tasks/${taskId}/stream`;
-  const es = new EventSource(url);
-  currentEventSource = es;
+  currentStreamHandle = adapter.streamTask(taskId, handleStreamEvent);
+}
 
-  es.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-
-      if (data.type === "snapshot") {
-        updateStages(data.task?.stages);
-        return;
-      }
-
-      if (data.type === "done") {
-        es.close();
-        currentEventSource = null;
-        finalizeRunningIndicator();
-        return;
-      }
-
-      if (data.data?.stages) {
-        updateStages(data.data.stages);
-      }
-
-      // --- Smart logging: only meaningful events ---
-
-      if (data.type === "status_change" && data.message?.includes("Pipeline stages set")) {
-        const stageNames = (data.data?.stages || []).map((s) => s.name).join(" → ");
-        if (stageNames) {
-          addLogEntry(`Pipeline: ${stageNames}`, "info");
-          speak(`This needs ${stageNames.replace(/→/g, "then")}.`);
-        }
-        return;
-      }
-
-      if (data.type === "log") {
-        const msg = data.message || "";
-        const stageMatch = msg.match(/Stage "([^"]+)" (\w+)/);
-        if (stageMatch) {
-          const [, stageName, stageStatus] = stageMatch;
-
-          if (stageStatus === "running") {
-            if (activeRunningStage === stageName) {
-              updateRunningIndicator(stageName);
-              return;
-            }
-            finalizeRunningIndicator();
-            activeRunningStage = stageName;
-            activeRunningStart = Date.now();
-            activeRunningEntry = addRunningIndicator(stageName, data.agent || data.data?.agent);
-            return;
-          }
-
-          if (stageStatus === "succeeded" || stageStatus === "failed") {
-            finalizeRunningIndicator();
-            return;
-          }
-        }
-
-        if (!stageMatch && msg) {
-          addLogEntry(msg, "info");
-        }
-        return;
-      }
-
-      if (data.type === "result" && data.data?.stage) {
-        const s = data.data.stage;
-        finalizeRunningIndicator();
-
-        if (s.status === "succeeded") {
-          const files = s.filesModified?.length || 0;
-          const dur = s.durationMs ? `${(s.durationMs / 1000).toFixed(0)}s` : "";
-          const cost = s.estimatedCost ? ` · $${s.estimatedCost.toFixed(4)}` : "";
-          const notes = s.notes ? ` · feedback logged` : "";
-          addLogEntry(`${s.agent || s.name} completed — ${files} file(s)${dur ? ` in ${dur}` : ""}${cost}${notes}`, "success");
-          speak(`${s.name} complete. ${files} files modified${dur ? ` in ${dur}` : ""}.`);
-        } else if (s.status === "failed") {
-          const err = s.errors?.length ? `: ${s.errors[0]}` : "";
-          addLogEntry(`${s.agent || s.name} failed${err}`, "error");
-          speak(`${s.name} stage failed.`);
-        }
-        return;
-      }
-
-      if (data.type === "status_change") {
-        finalizeRunningIndicator();
-
-        if (data.data?.status === "completed") {
-          statusEl.textContent = "Pipeline completed";
-          cancelBtn.style.display = "none";
-          currentRunningTaskId = null;
-          const stages = data.data?.stages || lastStagesSnapshot;
-          const totalFiles = new Set();
-          let totalCost = 0;
-          stages.forEach((s) => {
-            (s.filesModified || []).forEach((f) => totalFiles.add(f));
-            if (s.estimatedCost) totalCost += s.estimatedCost;
-          });
-          const costStr = totalCost > 0 ? ` · $${totalCost.toFixed(4)}` : "";
-          addLogEntry(`Pipeline complete — ${totalFiles.size} file(s) modified${costStr}`, "success");
-          speak(`Pipeline complete. ${totalFiles.size} files modified across all stages.`);
-        } else if (data.data?.status === "failed") {
-          const errMsg = data.data?.error || "unknown error";
-          statusEl.textContent = `Pipeline failed`;
-          cancelBtn.style.display = "none";
-          currentRunningTaskId = null;
-          addLogEntry(`Pipeline failed: ${errMsg}`, "error");
-          speak(`Pipeline failed. ${errMsg}.`);
-        } else if (data.data?.status === "cancelled") {
-          statusEl.textContent = "Pipeline cancelled";
-          cancelBtn.style.display = "none";
-          currentRunningTaskId = null;
-          approvalBanner.classList.remove("visible");
-          addLogEntry("Pipeline cancelled by user", "error");
-        } else if (data.message && !data.message.includes("Stage")) {
-          addLogEntry(data.message, "info");
-        }
-        return;
-      }
-
-      if (data.type === "approval_required") {
-        finalizeRunningIndicator();
-        addLogEntry(`Awaiting approval: ${data.data?.approvalType || "review"}`, "pending");
-        handleApprovalRequired(data);
-        return;
-      }
-
-      // Unhandled event types are silently ignored
-
-    } catch {
-      // Ignore unparseable SSE
+function handleStreamEvent(data) {
+  try {
+    if (data.type === "error") {
+      finalizeRunningIndicator();
+      addLogEntry(data.message || "Connection lost", "error");
+      return;
     }
-  };
 
-  es.onerror = () => {
-    finalizeRunningIndicator();
-    addLogEntry("SSE connection lost — refresh to reconnect", "error");
-    es.close();
-    currentEventSource = null;
-  };
+    if (data.type === "snapshot") {
+      updateStages(data.task?.stages);
+      return;
+    }
+
+    if (data.type === "done") {
+      if (currentStreamHandle) { currentStreamHandle.close(); currentStreamHandle = null; }
+      finalizeRunningIndicator();
+      return;
+    }
+
+    if (data.data?.stages) {
+      updateStages(data.data.stages);
+    }
+
+    if (data.type === "status_change" && data.message?.includes("Pipeline stages set")) {
+      const stageNames = (data.data?.stages || []).map((s) => s.name).join(" → ");
+      if (stageNames) {
+        addLogEntry(`Pipeline: ${stageNames}`, "info");
+        speak(`This needs ${stageNames.replace(/→/g, "then")}.`);
+      }
+      return;
+    }
+
+    if (data.type === "log") {
+      const msg = data.message || "";
+      const stageMatch = msg.match(/Stage "([^"]+)" (\w+)/);
+      if (stageMatch) {
+        const [, stageName, stageStatus] = stageMatch;
+
+        if (stageStatus === "running") {
+          if (activeRunningStage === stageName) {
+            updateRunningIndicator(stageName);
+            return;
+          }
+          finalizeRunningIndicator();
+          activeRunningStage = stageName;
+          activeRunningStart = Date.now();
+          activeRunningEntry = addRunningIndicator(stageName, data.agent || data.data?.agent);
+          return;
+        }
+
+        if (stageStatus === "succeeded" || stageStatus === "failed") {
+          finalizeRunningIndicator();
+          return;
+        }
+      }
+
+      if (!stageMatch && msg) {
+        addLogEntry(msg, "info");
+      }
+      return;
+    }
+
+    if (data.type === "result" && data.data?.stage) {
+      const s = data.data.stage;
+      finalizeRunningIndicator();
+
+      if (s.status === "succeeded") {
+        const files = s.filesModified?.length || 0;
+        const dur = s.durationMs ? `${(s.durationMs / 1000).toFixed(0)}s` : "";
+        const cost = s.estimatedCost ? ` · $${s.estimatedCost.toFixed(4)}` : "";
+        const notes = s.notes ? ` · feedback logged` : "";
+        addLogEntry(`${s.agent || s.name} completed — ${files} file(s)${dur ? ` in ${dur}` : ""}${cost}${notes}`, "success");
+        speak(`${s.name} complete. ${files} files modified${dur ? ` in ${dur}` : ""}.`);
+      } else if (s.status === "failed") {
+        const err = s.errors?.length ? `: ${s.errors[0]}` : "";
+        addLogEntry(`${s.agent || s.name} failed${err}`, "error");
+        speak(`${s.name} stage failed.`);
+      }
+      return;
+    }
+
+    if (data.type === "status_change") {
+      finalizeRunningIndicator();
+
+      if (data.data?.status === "completed") {
+        statusEl.textContent = "Pipeline completed";
+        cancelBtn.style.display = "none";
+        currentRunningTaskId = null;
+        const stages = data.data?.stages || lastStagesSnapshot;
+        const totalFiles = new Set();
+        let totalCost = 0;
+        stages.forEach((s) => {
+          (s.filesModified || []).forEach((f) => totalFiles.add(f));
+          if (s.estimatedCost) totalCost += s.estimatedCost;
+        });
+        const costStr = totalCost > 0 ? ` · $${totalCost.toFixed(4)}` : "";
+        addLogEntry(`Pipeline complete — ${totalFiles.size} file(s) modified${costStr}`, "success");
+        speak(`Pipeline complete. ${totalFiles.size} files modified across all stages.`);
+      } else if (data.data?.status === "failed") {
+        const errMsg = data.data?.error || "unknown error";
+        statusEl.textContent = "Pipeline failed";
+        cancelBtn.style.display = "none";
+        currentRunningTaskId = null;
+        addLogEntry(`Pipeline failed: ${errMsg}`, "error");
+        speak(`Pipeline failed. ${errMsg}.`);
+      } else if (data.data?.status === "cancelled") {
+        statusEl.textContent = "Pipeline cancelled";
+        cancelBtn.style.display = "none";
+        currentRunningTaskId = null;
+        approvalBanner.classList.remove("visible");
+        addLogEntry("Pipeline cancelled by user", "error");
+      } else if (data.message && !data.message.includes("Stage")) {
+        addLogEntry(data.message, "info");
+      }
+      return;
+    }
+
+    if (data.type === "approval_required") {
+      finalizeRunningIndicator();
+      addLogEntry(`Awaiting approval: ${data.data?.approvalType || "review"}`, "pending");
+      handleApprovalRequired(data);
+      return;
+    }
+  } catch {
+    // Ignore
+  }
 }
 
 function addRunningIndicator(stageName, agent) {
