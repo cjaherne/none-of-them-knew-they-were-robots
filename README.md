@@ -82,7 +82,7 @@ kubectl get agenttasks        # or: kubectl get at
 ├── helm/agent-system/      Helm chart for K8s deployment
 ├── infra/                  AWS CDK (EKS, DynamoDB, S3, API Gateway)
 ├── test-harness/           Local MVP test harness (Express + agent CLI)
-└── client/web/             Browser UI (works with both cloud and local)
+└── client/web/             Unified browser UI (local test harness + AWS cloud; backend adapter, responsive layout)
 ```
 
 ## Prerequisites
@@ -209,12 +209,7 @@ aws s3 sync skills/ s3://dev-agent-skills-<ACCOUNT>/
 
 ### 8. Configure the web client
 
-Set the API Gateway URL in the web client:
-
-```javascript
-localStorage.setItem("apiBase", "https://your-api-id.execute-api.region.amazonaws.com/prod");
-localStorage.setItem("wsUrl", "wss://your-ws-id.execute-api.region.amazonaws.com/dev");
-```
+In the UI, set **Backend → Mode** to **AWS Cloud** and enter your **REST URL** and **WebSocket URL** (e.g. `https://your-api-id.execute-api.region.amazonaws.com/prod` and `wss://your-ws-id.execute-api.region.amazonaws.com/prod`). Values are stored in `localStorage`.
 
 ## Usage
 
@@ -229,15 +224,16 @@ npm install
 npx tsx src/server.ts
 ```
 
-Open http://localhost:3000 and configure:
+Open http://localhost:3000. The same UI is used for the local test harness and for the AWS cloud deployment; use **Backend → Mode** to switch between **Local Test Harness** and **AWS Cloud** (cloud mode uses separate REST and WebSocket URLs). The layout is responsive: desktop shows a 300px sidebar (command + config) and a main panel (pipeline, approval, event log); below 768px the sidebar collapses and can be toggled via Settings.
 
-- **Workspace** -- local directory where the agent will create files (e.g. `C:\dev\my-project`)
-- **Repo** -- GitHub repo URL (optional, for clone + push)
-- **Base branch** -- branch to fork from (default: `main`)
-- **Work branch** -- name for the new branch (auto-generated if blank)
-- **Pipeline mode** -- Auto (BigBoss decides), Full, Code+Test, or Code Only
-- **Voice** -- toggle spoken status updates and design approval announcements
-- **Require design approval** -- pause the pipeline after the design stage for human review
+Configure in the sidebar:
+
+- **Workspace** -- local directory where the agent will create files (e.g. `C:\dev\my-project`) (local only)
+- **Repo** -- GitHub repo URL (optional, for clone + push) (local only)
+- **Base branch** / **Work branch** -- branch to fork from and name for the new branch (local only)
+- **Pipeline mode** -- Auto (BigBoss decides), Full, Code+Test, or Code Only (local only)
+- **Voice** -- toggle spoken status updates and design approval announcements (local only)
+- **Require design approval** -- pause the pipeline after the design stage for human review (local only)
 
 #### Voice input
 
