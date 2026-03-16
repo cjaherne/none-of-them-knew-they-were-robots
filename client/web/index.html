@@ -3,20 +3,24 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Agent Voice Control</title>
+  <title>Agent MVP Test Harness</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
       --bg: #0a0a0f;
       --surface: #13131a;
+      --surface-2: #1a1a24;
       --border: #1e1e2e;
+      --border-active: #2e2e42;
       --text: #e4e4ef;
       --text-muted: #7a7a8e;
+      --text-dim: #4a4a5e;
       --accent: #6366f1;
       --accent-glow: rgba(99, 102, 241, 0.3);
       --danger: #ef4444;
       --success: #22c55e;
+      --warning: #f59e0b;
     }
 
     body {
@@ -30,117 +34,332 @@
     }
 
     .container {
-      max-width: 480px;
+      max-width: 640px;
       width: 100%;
       padding: 2rem 1.5rem;
       display: flex;
       flex-direction: column;
-      gap: 2rem;
-      min-height: 100dvh;
+      gap: 1.5rem;
     }
 
     header {
-      text-align: center;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
     }
 
     header h1 {
-      font-size: 1.25rem;
+      font-size: 1.125rem;
       font-weight: 600;
       letter-spacing: -0.02em;
     }
 
-    header p {
+    .settings-toggle {
+      background: none;
+      border: 1px solid var(--border);
       color: var(--text-muted);
-      font-size: 0.875rem;
-      margin-top: 0.25rem;
+      border-radius: 6px;
+      padding: 0.375rem 0.625rem;
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.15s;
     }
 
-    .mic-section {
+    .settings-toggle:hover {
+      border-color: var(--accent);
+      color: var(--text);
+    }
+
+    /* --- Settings Panel --- */
+    .settings {
+      display: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem;
+    }
+
+    .settings.visible { display: block; }
+
+    .settings label {
+      display: block;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.25rem;
+    }
+
+    .settings label:not(:first-child) {
+      margin-top: 0.75rem;
+    }
+
+    .settings input, .settings select {
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 0.8125rem;
+      outline: none;
+    }
+
+    .settings input:focus, .settings select:focus {
+      border-color: var(--accent);
+    }
+
+    .backend-indicator {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--success);
+      margin-right: 0.375rem;
+    }
+
+    .backend-indicator.disconnected { background: var(--danger); }
+
+    /* --- Command Input --- */
+    .command-section {
       display: flex;
       flex-direction: column;
-      align-items: center;
-      gap: 1rem;
-      flex: 1;
-      justify-content: center;
+      gap: 0.75rem;
     }
 
-    .mic-btn {
-      width: 96px;
-      height: 96px;
-      border-radius: 50%;
-      border: 2px solid var(--border);
-      background: var(--surface);
-      color: var(--text);
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: all 0.2s ease;
-    }
-
-    .mic-btn:hover {
-      border-color: var(--accent);
-      box-shadow: 0 0 24px var(--accent-glow);
-    }
-
-    .mic-btn.recording {
-      border-color: var(--danger);
-      background: rgba(239, 68, 68, 0.1);
-      animation: pulse 1.5s ease-in-out infinite;
-    }
-
-    .mic-btn svg {
-      width: 32px;
-      height: 32px;
-    }
-
-    @keyframes pulse {
-      0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
-      50% { box-shadow: 0 0 0 16px rgba(239, 68, 68, 0); }
-    }
-
-    .status {
-      font-size: 0.875rem;
-      color: var(--text-muted);
-      text-align: center;
-      min-height: 1.25rem;
-    }
-
-    .text-input {
+    .command-input {
       display: flex;
       gap: 0.5rem;
     }
 
-    .text-input input {
+    .command-input textarea {
       flex: 1;
       padding: 0.75rem 1rem;
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: 10px;
       color: var(--text);
       font-size: 0.875rem;
+      font-family: inherit;
       outline: none;
+      resize: vertical;
+      min-height: 48px;
+      max-height: 160px;
     }
 
-    .text-input input:focus {
+    .command-input textarea:focus {
       border-color: var(--accent);
     }
 
-    .text-input button {
-      padding: 0.75rem 1.25rem;
+    .command-input textarea::placeholder {
+      color: var(--text-dim);
+    }
+
+    .command-actions {
+      display: flex;
+      gap: 0.5rem;
+      align-items: flex-end;
+    }
+
+    .send-btn {
+      padding: 0.75rem 1.5rem;
       background: var(--accent);
       color: white;
       border: none;
-      border-radius: 8px;
+      border-radius: 10px;
       font-size: 0.875rem;
       font-weight: 500;
       cursor: pointer;
+      white-space: nowrap;
+      transition: opacity 0.15s;
     }
 
-    .text-input button:hover {
-      opacity: 0.9;
+    .send-btn:hover { opacity: 0.9; }
+    .send-btn:disabled { opacity: 0.4; cursor: default; }
+
+    .mic-btn-small {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s;
+      flex-shrink: 0;
     }
 
+    .mic-btn-small:hover {
+      border-color: var(--accent);
+      color: var(--text);
+    }
+
+    .mic-btn-small.recording {
+      border-color: var(--danger);
+      color: var(--danger);
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+
+    .mic-btn-small svg { width: 18px; height: 18px; }
+
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+      50% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+    }
+
+    .project-settings {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 0.375rem 0.5rem;
+      align-items: center;
+    }
+
+    .project-settings .field-label {
+      font-size: 0.6875rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+      text-align: right;
+    }
+
+    .project-settings input {
+      padding: 0.4rem 0.625rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 0.8125rem;
+      outline: none;
+    }
+
+    .project-settings input:focus { border-color: var(--accent); }
+    .project-settings input::placeholder { color: var(--text-dim); }
+
+    .branch-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.5rem;
+    }
+
+    /* --- Pipeline Progress --- */
+    .pipeline {
+      display: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem;
+    }
+
+    .pipeline.visible { display: block; }
+
+    .pipeline-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.75rem;
+    }
+
+    .pipeline-header h2 {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+
+    .pipeline-task-id {
+      font-size: 0.6875rem;
+      color: var(--text-dim);
+      font-family: 'SF Mono', SFMono-Regular, Menlo, monospace;
+    }
+
+    .pipeline-stages {
+      display: flex;
+      gap: 0.25rem;
+      align-items: center;
+    }
+
+    .stage {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.375rem;
+    }
+
+    .stage-bar {
+      width: 100%;
+      height: 4px;
+      border-radius: 2px;
+      background: var(--border);
+      transition: background 0.3s;
+    }
+
+    .stage-bar.running {
+      background: var(--accent);
+      animation: barPulse 1.5s ease-in-out infinite;
+    }
+
+    .stage-bar.succeeded { background: var(--success); }
+    .stage-bar.failed { background: var(--danger); }
+
+    @keyframes barPulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .stage-label {
+      font-size: 0.6875rem;
+      color: var(--text-dim);
+      text-align: center;
+    }
+
+    .stage-label.active { color: var(--text); }
+
+    .stage-connector {
+      width: 16px;
+      height: 2px;
+      background: var(--border);
+      flex-shrink: 0;
+      margin-bottom: 1.125rem;
+    }
+
+    .stage-detail {
+      margin-top: 0.75rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8125rem;
+    }
+
+    .stage-detail .agent-name {
+      color: var(--accent);
+      font-weight: 500;
+      font-size: 0.75rem;
+    }
+
+    .stage-detail .stage-meta {
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      margin-top: 0.25rem;
+    }
+
+    .stage-files {
+      margin-top: 0.375rem;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      font-family: 'SF Mono', SFMono-Regular, Menlo, monospace;
+    }
+
+    .stage-errors {
+      margin-top: 0.375rem;
+      font-size: 0.75rem;
+      color: var(--danger);
+    }
+
+    /* --- Task Log --- */
     .task-log {
       display: flex;
       flex-direction: column;
@@ -155,50 +374,109 @@
     }
 
     .log-entry {
-      padding: 0.75rem;
+      padding: 0.625rem 0.75rem;
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 8px;
       font-size: 0.8125rem;
+      line-height: 1.4;
     }
 
     .log-entry .time {
-      color: var(--text-muted);
-      font-size: 0.75rem;
+      color: var(--text-dim);
+      font-size: 0.6875rem;
+      margin-right: 0.375rem;
     }
 
     .log-entry.success { border-left: 3px solid var(--success); }
     .log-entry.error { border-left: 3px solid var(--danger); }
     .log-entry.pending { border-left: 3px solid var(--accent); }
+
+    .status-bar {
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+      min-height: 1.25rem;
+    }
   </style>
 </head>
 <body>
   <div class="container">
     <header>
-      <h1>Agent Voice Control</h1>
-      <p>Speak or type a command to your agent team</p>
+      <h1>Agent MVP Test Harness</h1>
+      <button class="settings-toggle" id="settingsToggle">Settings</button>
     </header>
 
-    <div class="mic-section">
-      <button class="mic-btn" id="micBtn" aria-label="Record voice command">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-          <line x1="12" y1="19" x2="12" y2="23"/>
-          <line x1="8" y1="23" x2="16" y2="23"/>
-        </svg>
-      </button>
-      <div class="status" id="status">Tap to speak</div>
+    <div class="settings" id="settingsPanel">
+      <label for="backendSelect">Backend</label>
+      <select id="backendSelect">
+        <option value="local">Local (http://localhost:3000)</option>
+        <option value="custom">Cloud / Custom URL</option>
+      </select>
+
+      <label for="customUrl">API URL</label>
+      <input type="text" id="customUrl" placeholder="https://your-api-gateway-url.amazonaws.com/dev" />
     </div>
 
-    <div class="text-input">
-      <input type="text" id="textInput" placeholder="Or type a command..." />
-      <button id="sendBtn">Send</button>
+    <div class="command-section">
+      <div class="command-input">
+        <textarea id="textInput" rows="2" placeholder="Describe what you want the agents to build..."></textarea>
+        <div class="command-actions">
+          <button class="mic-btn-small" id="micBtn" aria-label="Record voice command">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="23"/>
+              <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+          </button>
+          <button class="send-btn" id="sendBtn">Run Pipeline</button>
+        </div>
+      </div>
+
+      <div class="project-settings">
+        <span class="field-label">Workspace</span>
+        <input type="text" id="workspaceInput" placeholder="C:\dev\my-project (local path)" />
+
+        <span class="field-label">Repo</span>
+        <input type="text" id="repoInput" placeholder="https://github.com/user/repo (optional)" />
+
+        <span class="field-label">Branches</span>
+        <div class="branch-row">
+          <input type="text" id="baseBranchInput" placeholder="Base branch (default: main)" />
+          <input type="text" id="branchInput" placeholder="Work branch (auto if blank)" />
+        </div>
+      </div>
+    </div>
+
+    <div class="status-bar" id="status"></div>
+
+    <div class="pipeline" id="pipelinePanel">
+      <div class="pipeline-header">
+        <h2>Pipeline</h2>
+        <span class="pipeline-task-id" id="pipelineTaskId"></span>
+      </div>
+      <div class="pipeline-stages" id="pipelineStages">
+        <div class="stage" data-stage="design">
+          <div class="stage-bar" id="bar-design"></div>
+          <div class="stage-label">design</div>
+        </div>
+        <div class="stage-connector"></div>
+        <div class="stage" data-stage="coding">
+          <div class="stage-bar" id="bar-coding"></div>
+          <div class="stage-label">coding</div>
+        </div>
+        <div class="stage-connector"></div>
+        <div class="stage" data-stage="validation">
+          <div class="stage-bar" id="bar-validation"></div>
+          <div class="stage-label">validation</div>
+        </div>
+      </div>
+      <div class="stage-detail" id="stageDetail"></div>
     </div>
 
     <div class="task-log" id="taskLog">
-      <h2>Task Log</h2>
+      <h2>Event Log</h2>
     </div>
   </div>
 
