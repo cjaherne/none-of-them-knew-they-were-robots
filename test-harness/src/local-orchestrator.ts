@@ -434,7 +434,7 @@ async function bigBossSummarize(
 async function readDesignPreview(workDir: string): Promise<string> {
   try {
     const content = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
-    return content.slice(0, 600);
+    return content.slice(0, 8000);
   } catch {
     return "";
   }

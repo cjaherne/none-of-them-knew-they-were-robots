@@ -465,11 +465,12 @@
       border: 1px solid var(--border);
       border-radius: 4px;
       padding: 0.5rem;
-      max-height: 200px;
-      overflow-y: auto;
+      max-height: min(50vh, 480px);
+      overflow-y: scroll;
       white-space: pre-wrap;
       word-break: break-word;
       font-family: var(--mono);
+      display: block;
     }
 
     .approval-feedback-input textarea {
@@ -1243,7 +1244,7 @@
         </div>
         <p id="approvalSummary" class="approval-summary-text"></p>
         <details class="approval-preview" id="approvalPreviewBlock">
-          <summary>View details</summary>
+          <summary>View details (DESIGN.md — scroll to read full document)</summary>
           <pre id="approvalPreview"></pre>
         </details>
         <div class="approval-feedback-input" id="revisionInputBlock" style="display: none;">
