@@ -12,18 +12,33 @@ export interface StageStatus {
   filesModified?: string[];
   errors?: string[];
   durationMs?: number;
+  notes?: string;
+  tokenUsage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number };
+  estimatedCost?: number;
+}
+
+export type PipelineMode = "auto" | "full" | "code-test" | "code-only";
+
+export interface ApprovalResponse {
+  approved: boolean;
+  action: "approve" | "reject" | "revise" | "continue" | "redesign";
+  feedback?: string;
 }
 
 export interface MvpTask extends Task {
   workspace?: string;
   baseBranch: string;
   branch: string;
+  pipelineMode: PipelineMode;
+  requireDesignApproval: boolean;
   stages: StageStatus[];
 }
 
 class TaskStore {
   private tasks = new Map<string, MvpTask>();
   private emitter = new EventEmitter();
+  private approvalResolvers = new Map<string, (response: ApprovalResponse) => void>();
+  private abortControllers = new Map<string, AbortController>();
 
   constructor() {
     this.emitter.setMaxListeners(100);
@@ -31,11 +46,12 @@ class TaskStore {
 
   createTask(
     prompt: string,
-    opts: { repo?: string; workspace?: string; baseBranch?: string; branch?: string } = {},
+    opts: { repo?: string; workspace?: string; baseBranch?: string; branch?: string; pipelineMode?: PipelineMode; requireApproval?: boolean } = {},
   ): MvpTask {
     const now = new Date().toISOString();
     const id = uuid();
     const branch = opts.branch || `agent/${id.slice(0, 8)}`;
+    const pipelineMode = opts.pipelineMode || "full";
     const task: MvpTask = {
       id,
       prompt,
@@ -44,14 +60,12 @@ class TaskStore {
       workspace: opts.workspace,
       baseBranch: opts.baseBranch || "main",
       branch,
+      pipelineMode,
+      requireDesignApproval: opts.requireApproval ?? false,
       requiresApproval: false,
       createdAt: now,
       updatedAt: now,
-      stages: [
-        { name: "design", agent: "core-code-designer", status: "pending" },
-        { name: "coding", agent: "coding", status: "pending" },
-        { name: "validation", agent: "testing", status: "pending" },
-      ],
+      stages: [],
     };
     this.tasks.set(task.id, task);
     this.emit(task.id, {
@@ -66,6 +80,20 @@ class TaskStore {
 
   getTask(taskId: string): MvpTask | undefined {
     return this.tasks.get(taskId);
+  }
+
+  setStages(taskId: string, stages: StageStatus[]): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    task.stages = stages;
+    task.updatedAt = new Date().toISOString();
+    this.emit(taskId, {
+      taskId,
+      type: "status_change",
+      message: `Pipeline stages set: ${stages.map((s) => s.name).join(" → ")}`,
+      data: { status: task.status, stages: task.stages },
+      timestamp: task.updatedAt,
+    });
   }
 
   updateTaskStatus(taskId: string, status: TaskStatus, error?: string): void {
@@ -103,6 +131,66 @@ class TaskStore {
       message: `[${stage.agent}] Stage "${stageName}" ${update.status ?? "updated"}`,
       data: { stage: { ...stage }, stages: task.stages },
       timestamp: task.updatedAt,
+    });
+  }
+
+  requestApproval(
+    taskId: string,
+    summary: string,
+    extra?: Record<string, unknown>,
+  ): Promise<ApprovalResponse> {
+    this.emit(taskId, {
+      taskId,
+      type: "approval_required" as TaskStreamEvent["type"],
+      message: summary,
+      data: { summary, stages: this.tasks.get(taskId)?.stages, ...extra },
+      timestamp: new Date().toISOString(),
+    });
+
+    return new Promise<ApprovalResponse>((resolve) => {
+      this.approvalResolvers.set(taskId, resolve);
+    });
+  }
+
+  resolveApproval(taskId: string, response: ApprovalResponse): void {
+    const resolver = this.approvalResolvers.get(taskId);
+    if (resolver) {
+      resolver(response);
+      this.approvalResolvers.delete(taskId);
+    }
+  }
+
+  registerAbort(taskId: string, controller: AbortController): void {
+    this.abortControllers.set(taskId, controller);
+  }
+
+  cancelTask(taskId: string): boolean {
+    const controller = this.abortControllers.get(taskId);
+    if (!controller) return false;
+    controller.abort();
+    this.abortControllers.delete(taskId);
+
+    const pending = this.approvalResolvers.get(taskId);
+    if (pending) {
+      pending({ approved: false, action: "reject" });
+      this.approvalResolvers.delete(taskId);
+    }
+
+    this.updateTaskStatus(taskId, TaskStatus.Cancelled, "Cancelled by user");
+    return true;
+  }
+
+  cleanupAbort(taskId: string): void {
+    this.abortControllers.delete(taskId);
+  }
+
+  emit_log(taskId: string, message: string): void {
+    this.emit(taskId, {
+      taskId,
+      type: "log",
+      message,
+      data: { stages: this.tasks.get(taskId)?.stages },
+      timestamp: new Date().toISOString(),
     });
   }
 
