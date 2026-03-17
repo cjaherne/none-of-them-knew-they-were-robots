@@ -38,7 +38,19 @@ const PARALLEL_DESIGNERS: StageDefinition[] = [
   { name: "ux-design", agent: "ux-designer", category: "design" },
   { name: "core-design", agent: "core-code-designer", category: "design" },
   { name: "visual-design", agent: "graphics-designer", category: "design" },
+  { name: "game-design", agent: "game-designer", category: "design" },
 ];
+
+/** Maps BigBoss agent type string to StageDefinition (for full stages[].agents[] format) */
+const AGENT_TYPE_TO_DEF: Record<string, StageDefinition> = {
+  "ux-designer": { name: "ux-design", agent: "ux-designer", category: "design" },
+  "core-code-designer": { name: "core-design", agent: "core-code-designer", category: "design" },
+  "graphics-designer": { name: "visual-design", agent: "graphics-designer", category: "design" },
+  "game-designer": { name: "game-design", agent: "game-designer", category: "design" },
+  "coding": { name: "coding", agent: "coding", category: "coding" },
+  "lua-coding": { name: "coding", agent: "lua-coding", category: "coding" },
+  "testing": { name: "validation", agent: "testing", category: "validation" },
+};
 
 const RELEASE_STAGE: StageDefinition = { name: "release", agent: "release", category: "release" };
 
@@ -99,27 +111,31 @@ Complexity guide:
 - "moderate" = single-feature addition, small refactor
 - "complex" = multi-file feature, architectural change, new system`;
 
-const BIGBOSS_CONTEXT_BROKER_PROMPT = `You are BigBoss, a context broker for a multi-agent pipeline. You will receive a task description and a codebase summary. Your job is to:
-1. Decide which stages are needed and estimate complexity (same as routing).
-2. Produce a focused context brief for EACH agent that will run, telling them exactly what to focus on.
+const BIGBOSS_CONTEXT_BROKER_PROMPT = `You are BigBoss, a context broker for a multi-agent pipeline. You will receive a task description and a codebase summary. Your job is to produce a pipeline plan using the FULL stage/agent structure.
 
 Respond with ONLY a JSON object:
 {
-  "stages": ["design", "coding", "testing"],
+  "stages": [
+    {
+      "name": "design",
+      "parallel": true,
+      "agents": [
+        { "type": "agent-type", "context": { "focus": "1-3 sentences for this agent" } }
+      ]
+    },
+    { "name": "coding", "parallel": false, "agents": [{ "type": "coding" or "lua-coding", "context": { "focus": "..." } }] },
+    { "name": "validation", "parallel": false, "agents": [{ "type": "testing", "context": { "focus": "..." } }] }
+  ],
   "complexity": "trivial" | "moderate" | "complex",
-  "agentBriefs": {
-    "design": "1-3 sentences telling the design agent which existing files/patterns to consider, what architectural constraints exist, and what the key design decisions are.",
-    "coding": "1-3 sentences telling the coding agent which files to modify/create, what patterns to follow, and any gotchas.",
-    "testing": "1-3 sentences telling the testing agent what to test, what framework to use, and what edge cases matter."
-  }
+  "reasoning": "Brief explanation"
 }
 
-Rules for agent briefs:
-- Reference specific files and directories from the codebase summary
-- Mention existing patterns the agent should follow
-- Flag potential conflicts or dependencies
-- Keep each brief under 300 chars -- be precise, not verbose
-- Only include briefs for stages that are in the "stages" array`;
+Allowed agent types: ux-designer, core-code-designer, graphics-designer, game-designer, coding, lua-coding, testing.
+
+- **Web/UI tasks**: In the design stage (parallel: true) include ux-designer, core-code-designer, graphics-designer. Use coding for the coding stage.
+- **Full videogame / Lua / LÖVE tasks**: Set complexity to "complex". In the design stage (parallel: true) include MULTIPLE designers: game-designer (mechanics, controls, Lua structure), core-code-designer (architecture, modules), ux-designer (menus, HUD, flows), graphics-designer (visual style, art direction). Use lua-coding (not coding) for the coding stage. Do not use only one designer for a full game.
+- Designer agents run in parallel (parallel: true) when there are two or more in the same stage.
+- Each agent must have context.focus with 1-3 sentences (under 300 chars). Reference the task or codebase where helpful.`;
 
 interface BigBossResult {
   stages: StageDefinition[];
@@ -214,7 +230,7 @@ async function mergeDesignOutputs(
       const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
       const inputs = designFiles.map((d) =>
-        `## ${d.agent} design\n${d.content.slice(0, 3000)}`,
+        `## ${d.agent} design\n${d.content.slice(0, 8000)}`,
       ).join("\n\n---\n\n");
 
       const response = await client.chat.completions.create({
@@ -263,15 +279,21 @@ function buildBigBossUserMessage(prompt: string, workDir: string, archBrief?: st
   return parts.join("\n\n");
 }
 
-async function planWithOpenAI(prompt: string, workDir: string, archBrief?: string): Promise<BigBossResult | null> {
+async function planWithOpenAI(
+  prompt: string,
+  workDir: string,
+  archBrief?: string,
+  pipelineMode: PipelineMode = "auto",
+): Promise<BigBossResult | null> {
   try {
     const { default: OpenAI } = await import("openai");
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
     const userMessage = buildBigBossUserMessage(prompt, workDir, archBrief);
-    const hasContext = userMessage.includes("## Codebase");
-    const systemPrompt = hasContext ? BIGBOSS_CONTEXT_BROKER_PROMPT : BIGBOSS_ROUTING_PROMPT;
-    const maxTokens = hasContext ? 512 : 128;
+    const hasContext = userMessage.includes("## Codebase") || userMessage.includes("## Architecture Brief");
+    const useFullFormat = hasContext || pipelineMode === "auto";
+    const systemPrompt = useFullFormat ? BIGBOSS_CONTEXT_BROKER_PROMPT : BIGBOSS_ROUTING_PROMPT;
+    const maxTokens = useFullFormat ? 1024 : 128;
 
     const start = Date.now();
     const response = await client.chat.completions.create({
@@ -290,7 +312,7 @@ async function planWithOpenAI(prompt: string, workDir: string, archBrief?: strin
     if (!content) return null;
 
     const parsed = JSON.parse(content);
-    createLogger("bigboss").info(`OpenAI ${hasContext ? "context broker" : "routing"} in ${elapsed}s`, { stages: parsed.stages, complexity: parsed.complexity }, "flow");
+    createLogger("bigboss").info(`OpenAI ${useFullFormat ? "context broker" : "routing"} in ${elapsed}s`, { stages: parsed.stages, complexity: parsed.complexity }, "flow");
     if (parsed.agentBriefs) {
       for (const [agent, brief] of Object.entries(parsed.agentBriefs)) {
         createLogger("bigboss").debug(`Agent brief for ${agent}: ${(brief as string).slice(0, 100)}...`);
@@ -331,8 +353,80 @@ async function planWithAgentCli(
   }
 }
 
+function parseFullFormatStages(parsed: Record<string, unknown>): BigBossResult | null {
+  const rawStages = parsed.stages as Array<{ name?: string; parallel?: boolean; agents?: Array<{ type?: string; context?: { focus?: string } }> }>;
+  if (!Array.isArray(rawStages) || rawStages.length === 0) return null;
+  const first = rawStages[0];
+  if (!first || !Array.isArray(first.agents) || first.agents.length === 0) return null;
+
+  const complexity = (["trivial", "moderate", "complex"].includes(parsed.complexity as string)
+    ? parsed.complexity
+    : "moderate") as BigBossResult["complexity"];
+
+  const stageGroups: RuntimeStageGroup[] = [];
+  const ordered: StageDefinition[] = [];
+  const agentBriefs: Record<string, string> = {};
+
+  for (const stage of rawStages) {
+    const agents = stage.agents;
+    if (!Array.isArray(agents) || agents.length === 0) continue;
+
+    const stageDefs: StageDefinition[] = [];
+    for (const a of agents) {
+      const type = a?.type;
+      if (!type || typeof type !== "string") continue;
+      const def = AGENT_TYPE_TO_DEF[type];
+      if (!def || !skillPackExists(def.agent)) {
+        if (def) createLogger("orchestrator").warn(`Skill pack not found for ${type}, skipping`);
+        continue;
+      }
+      stageDefs.push(def);
+      ordered.push(def);
+      if (a?.context?.focus && typeof a.context.focus === "string") {
+        agentBriefs[def.agent] = a.context.focus;
+      }
+    }
+    if (stageDefs.length === 0) continue;
+
+    const stageName = stage.name && typeof stage.name === "string" ? stage.name : stageDefs[0].name;
+    const parallel = stage.parallel === true && stageDefs.length > 1;
+    stageGroups.push({
+      name: stageName,
+      parallel,
+      agents: stageDefs.map((d) => ({ type: d.agent })),
+      stageDefs,
+    });
+  }
+
+  const hasCoding = ordered.some((s) => s.category === "coding");
+  if (!hasCoding && ordered.length > 0) {
+    const codingDef = skillPackExists("lua-coding") ? AGENT_TYPE_TO_DEF["lua-coding"] : AGENT_TYPE_TO_DEF["coding"];
+    if (codingDef && skillPackExists(codingDef.agent)) {
+      ordered.push(codingDef);
+      stageGroups.push({
+        name: "coding",
+        parallel: false,
+        agents: [{ type: codingDef.agent }],
+        stageDefs: [codingDef],
+      });
+    }
+  }
+
+  if (stageGroups.length === 0) return null;
+
+  createLogger("bigboss").info(`BigBoss full format: ${ordered.map((s) => s.agent).join(" -> ")}`, { complexity, briefCount: Object.keys(agentBriefs).length }, "flow");
+  return { stages: ordered, stageGroups, complexity, agentBriefs, parallelDesign: ordered.filter((s) => s.category === "design").length > 1 };
+}
+
 function parseBigBossResponse(parsed: Record<string, unknown>): BigBossResult | null {
   if (!Array.isArray(parsed.stages) || parsed.stages.length === 0) return null;
+
+  const first = parsed.stages[0];
+  if (first && typeof first === "object" && first !== null && "agents" in first && Array.isArray((first as { agents?: unknown }).agents)) {
+    const result = parseFullFormatStages(parsed);
+    if (result) return result;
+    createLogger("bigboss").info("Full format parse failed, falling back to simplified", undefined, "flow");
+  }
 
   const validNames = new Set(["design", "coding", "testing"]);
   const stageNames = (parsed.stages as string[]).filter((s) => validNames.has(s));
@@ -448,9 +542,10 @@ async function planWithBigBoss(
   workDir: string,
   pipelineId: string,
   archBrief?: string,
+  pipelineMode: PipelineMode = "auto",
 ): Promise<BigBossResult | null> {
   if (process.env.OPENAI_API_KEY) {
-    const result = await planWithOpenAI(prompt, workDir, archBrief);
+    const result = await planWithOpenAI(prompt, workDir, archBrief, pipelineMode);
     if (result) return result;
     createLogger("bigboss").info("OpenAI failed, trying agent CLI fallback", undefined, "flow");
   }
@@ -509,7 +604,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
   let planned: BigBossResult | null = null;
 
   if (task.pipelineMode === "auto") {
-    planned = await planWithBigBoss(task.prompt, workDir, task.id, cacheBrief || undefined);
+    planned = await planWithBigBoss(task.prompt, workDir, task.id, cacheBrief || undefined, task.pipelineMode);
     if (planned) {
       stages = planned.stages;
       complexity = planned.complexity;

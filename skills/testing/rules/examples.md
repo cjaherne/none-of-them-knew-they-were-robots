@@ -266,3 +266,52 @@ test.describe('Checkout flow', () => {
   });
 });
 ```
+
+---
+
+## Example 3: Lua game logic — unit tests with busted
+
+**Context:** LÖVE game with a pure Lua utility module for score and level progression. No LÖVE runtime in tests.
+
+**Implementation:**
+
+```lua
+-- spec/score_utils_spec.lua
+local busted = require("busted")
+local describe, it, assert = busted.describe, busted.it, busted.assert
+local score_utils = require("src.data.score_utils")
+
+describe("score_utils", function()
+  describe("levelForScore", function()
+    it("returns 1 for score 0", function()
+      assert.are.equal(1, score_utils.levelForScore(0))
+    end)
+
+    it("returns 2 when score reaches first threshold", function()
+      assert.are.equal(2, score_utils.levelForScore(1000))
+    end)
+
+    it("returns same level for score just below threshold", function()
+      assert.are.equal(1, score_utils.levelForScore(999))
+    end)
+
+    it("throws for negative score", function()
+      assert.has_error(function()
+        score_utils.levelForScore(-1)
+      end, "score must be non-negative")
+    end)
+  end)
+
+  describe("livesRemaining", function()
+    it("returns 3 when no deaths", function()
+      assert.are.equal(3, score_utils.livesRemaining(3, 0))
+    end)
+
+    it("returns 0 when deaths >= initial", function()
+      assert.are.equal(0, score_utils.livesRemaining(3, 3))
+    end)
+  end)
+end)
+```
+
+Run with: `busted` (or `luarocks test` if configured). Document in README: "Run tests: `busted`"

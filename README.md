@@ -12,15 +12,17 @@ Agents are organised into categories that define their pipeline position:
 
 | Category | Agents | Role | MCP Tools |
 |----------|--------|------|-----------|
-| **Analysis** | BigBoss | Analyses tasks, plans agent pipelines | Filesystem, GitHub |
-| **Design** | UX Designer | User flows, wireframes, accessibility | Filesystem, Playwright |
+| **Analysis** | BigBoss | Analyses tasks, plans agent pipelines; selects which design/coding agents run | Filesystem, GitHub |
+| **Design** | UX Designer | User flows, wireframes, accessibility (web and game UIs) | Filesystem, Playwright, Fetch |
 | **Design** | Core Code Designer | Architecture, data models, API contracts | Filesystem, GitHub |
-| **Design** | Graphics Designer | Color palettes, typography, CSS tokens | Filesystem |
-| **Coding** | Coding Agent | Implements code from design specs | Filesystem, GitHub |
+| **Design** | Graphics Designer | Color palettes, typography, CSS tokens, art direction | Filesystem, Fetch |
+| **Design** | Game Designer | Game mechanics, controls (keyboard + gamepad), game loop, Lua/LÖVE2D structure | Filesystem |
+| **Coding** | Coding Agent | Implements code (TypeScript, Python, web) from design specs | Filesystem, GitHub |
+| **Coding** | Lua Coding Agent | Implements Lua and LÖVE2D games from design specs | Filesystem, GitHub |
 | **Validation** | Testing Agent | Unit tests, integration tests, E2E | Filesystem, Playwright |
 | **Release** | Release Agent | Updates README, bumps SemVer in appropriate version file, commits, creates and pushes version tag, creates PR | Filesystem, GitHub |
 
-New specialist agents can be added by creating a skill pack directory and a registry entry -- no code changes needed. The **Release** agent runs automatically at the end of every successful pipeline (when a repo is configured) to prepare the branch for a pull request.
+BigBoss uses a full stage/agent structure to select which designers and coders run (e.g. for Lua games: Game Designer + Lua Coding Agent; for web UI: UX + Graphics + Core Code Designer). UX and Graphics designers have Fetch MCP for web search and URL content (e.g. accessibility standards, color tools); requires `uvx` for the fetch server. New specialist agents can be added by creating a skill pack directory and a registry entry. The **Release** agent runs automatically at the end of every successful pipeline (when a repo is configured).
 
 ### Architecture
 

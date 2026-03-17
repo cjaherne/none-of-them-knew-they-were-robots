@@ -466,7 +466,10 @@ function getHandoffContent(workDir: string, agentType: string, maxChars = 4000):
 
 function getTestPatterns(workDir: string): string | null {
   const files = listSourceFiles(workDir);
-  const testFiles = files.filter((f) => /\.(test|spec)\.[tj]sx?$/.test(f) || f.includes("__tests__/"));
+  const testFiles = files.filter((f) =>
+    /\.(test|spec)\.[tj]sx?$/.test(f) || f.includes("__tests__/") ||
+    f.endsWith("_spec.lua") || (f.includes("spec/") && f.endsWith(".lua")),
+  );
   if (testFiles.length === 0) return null;
 
   const sections: string[] = [];
@@ -514,6 +517,7 @@ export function buildContextBrief(
   upstreamResults?: AgentRunResult[],
   baseBranch?: string,
   agentBrief?: string | null,
+  agentType?: string,
 ): ContextBrief {
   const brief: ContextBrief = {
     fileTree: null,
@@ -549,7 +553,7 @@ export function buildContextBrief(
 
     case "coding":
       brief.fileTree = getFileTree(workDir);
-      brief.designDoc = getDesignDoc(workDir, 12000);
+      brief.designDoc = getDesignDoc(workDir, agentType === "lua-coding" ? 24000 : 12000);
       brief.projectFiles = getProjectFiles(workDir, 1500);
       if (upstreamResults) {
         for (const r of upstreamResults) {
@@ -561,7 +565,7 @@ export function buildContextBrief(
 
     case "validation":
       brief.fileTree = getFileTree(workDir);
-      brief.designDoc = getDesignDoc(workDir, 6000);
+      brief.designDoc = getDesignDoc(workDir, upstreamResults?.some((r) => r.agent === "lua-coding") ? 24000 : 6000);
       brief.testPatterns = getTestPatterns(workDir);
       brief.packageScripts = getPackageScripts(workDir);
       if (upstreamResults) {
@@ -583,7 +587,7 @@ function buildFullPrompt(
 ): string {
   const parts: string[] = [];
   const brief = buildContextBrief(
-    config.category, workDir, config.upstreamResults, config.baseBranch, config.agentBrief,
+    config.category, workDir, config.upstreamResults, config.baseBranch, config.agentBrief, config.agentType,
   );
 
   parts.push(getPreamble(config.category, config.parallelDesign));
@@ -810,6 +814,12 @@ async function injectSkillPack(
   }
 }
 
+/** Excludes .pipeline paths from modified-file count except design outputs (*-design.md). */
+function isExcludedPipelinePath(filePath: string): boolean {
+  if (!filePath.startsWith(PIPELINE_PATH_PREFIX)) return false;
+  return !filePath.endsWith("-design.md");
+}
+
 function collectModifiedFiles(workDir: string): string[] {
   try {
     const output = execSync("git diff --name-only HEAD", {
@@ -822,7 +832,7 @@ function collectModifiedFiles(workDir: string): string[] {
       .split("\n")
       .map((f) => f.trim())
       .filter(Boolean)
-      .filter((f) => !f.startsWith(INJECTED_PATH_PREFIX) && !f.startsWith(PIPELINE_PATH_PREFIX));
+      .filter((f) => !f.startsWith(INJECTED_PATH_PREFIX) && !isExcludedPipelinePath(f));
   } catch {
     try {
       const output = execSync("git status --porcelain", {
@@ -835,7 +845,7 @@ function collectModifiedFiles(workDir: string): string[] {
         .split("\n")
         .map((line) => line.trim().replace(/^[A-Z?]+\s+/, ""))
         .filter(Boolean)
-        .filter((f) => !f.startsWith(INJECTED_PATH_PREFIX) && !f.startsWith(PIPELINE_PATH_PREFIX));
+        .filter((f) => !f.startsWith(INJECTED_PATH_PREFIX) && !isExcludedPipelinePath(f));
     } catch {
       return [];
     }

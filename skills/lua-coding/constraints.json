@@ -1,0 +1,6 @@
+{
+  "maxTokens": 8192,
+  "forbiddenActions": [],
+  "requiredOutputFields": ["filesModified", "summary"],
+  "timeoutMs": 300000
+}
