@@ -1,6 +1,6 @@
 {
   "maxTokens": 4096,
   "forbiddenActions": ["write_code", "run_commands"],
-  "requiredOutputFields": ["targetLoveVersion", "mechanics", "controls", "gameLoop", "fileStructure"],
+  "requiredOutputFields": ["requirementsChecklist", "targetLoveVersion", "mechanics", "controls", "gameLoop", "fileStructure"],
   "timeoutMs": 60000
 }

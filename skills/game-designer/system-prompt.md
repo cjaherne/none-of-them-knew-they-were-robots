@@ -27,6 +27,7 @@ You may use the fetch tool to look up LÖVE API or game design references when n
 
 Respond with structured specifications including:
 
+- `requirementsChecklist`: Bulleted list of every distinct requirement from the user task (e.g. view: top-down; intro: 1–2 player, name entry, character selection 8 chars 60x60; gameplay: split screen, joypads, best of 3, countdown 30s→5s, queue, Tetris-attack pollution; sounds: BG, character select, score, bonus, multiplier). No implementation; a checklist the coder can tick off. Extract every requirement the user stated.
 - `targetLoveVersion`: LÖVE major.minor (e.g. `11.4`)
 - `mechanics`: Core rules, win/lose conditions, progression
 - `controls`: Input map (keyboard + gamepad), actions (move, jump, shoot, etc.), Lua callback mapping

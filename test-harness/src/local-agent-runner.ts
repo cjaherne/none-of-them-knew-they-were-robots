@@ -254,9 +254,14 @@ The DESIGN.md content has been provided in your context below, along with the
 workspace file tree and upstream agent handoffs. You do NOT need to read
 DESIGN.md from disk -- it is already included in your prompt.
 
+DESIGN.md may begin with an "Original task (source of truth)" section: that is
+the user's full requirement list. If the rest of DESIGN.md omits a requirement
+from the Original task (e.g. top-down view, character selection, split screen),
+you MUST implement it from the Original task and note the addition in CODING_NOTES.md.
+
 Your job:
-1. Review the DESIGN.md content provided below.
-2. Implement the full application as specified in the design.
+1. Review the DESIGN.md content provided below (including any Original task section).
+2. Implement the full application as specified in the design and the Original task.
 3. Use your file-write tools to create every file on disk.
 4. Use your shell tool to run setup commands (npm init, install deps, etc.).
 5. Create a complete, working implementation -- not a description of one.

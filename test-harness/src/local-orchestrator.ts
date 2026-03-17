@@ -191,9 +191,15 @@ function groupStages(stages: StageDefinition[], parallelDesign: boolean): Runtim
   return groups;
 }
 
+function prependOriginalTaskToDesign(workDir: string, designContent: string, originalTask: string): string {
+  const header = "## Original task (source of truth)\n\n" + originalTask.trim() + "\n\n---\n\n";
+  return header + designContent;
+}
+
 async function mergeDesignOutputs(
   workDir: string,
   results: AgentRunResult[],
+  originalTask?: string,
 ): Promise<void> {
   const designFiles: Array<{ agent: string; content: string }> = [];
 
@@ -217,9 +223,14 @@ async function mergeDesignOutputs(
     } catch { /* no design output at all */ }
   }
 
+  const writeDesign = async (content: string) => {
+    const final = originalTask ? prependOriginalTaskToDesign(workDir, content, originalTask) : content;
+    await fs.writeFile(path.join(workDir, "DESIGN.md"), final, "utf-8");
+  };
+
   if (designFiles.length <= 1) {
     if (designFiles.length === 1) {
-      await fs.writeFile(path.join(workDir, "DESIGN.md"), designFiles[0].content, "utf-8");
+      await writeDesign(designFiles[0].content);
     }
     return;
   }
@@ -230,7 +241,7 @@ async function mergeDesignOutputs(
       const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
       const inputs = designFiles.map((d) =>
-        `## ${d.agent} design\n${d.content.slice(0, 8000)}`,
+        `## ${d.agent} design\n${d.content.slice(0, 16000)}`,
       ).join("\n\n---\n\n");
 
       const response = await client.chat.completions.create({
@@ -238,17 +249,17 @@ async function mergeDesignOutputs(
         messages: [
           {
             role: "system",
-            content: "You are merging multiple design documents from parallel agents into a single unified DESIGN.md. Combine all sections, resolve conflicts by preferring the more specific/detailed version, and produce a coherent document. Maintain markdown formatting.",
+            content: "You are merging multiple design documents from parallel agents into a single unified DESIGN.md. Combine all sections, resolve conflicts by preferring the more specific/detailed version, and produce a coherent document. Maintain markdown formatting. Preserve every requirement from the source documents; do not drop items from requirements checklists or from bullet lists. If documents have a requirementsChecklist or similar section, include it in full in the merged DESIGN.md.",
           },
           { role: "user", content: inputs },
         ],
-        max_tokens: 4096,
+        max_tokens: 8192,
         temperature: 0.2,
       });
 
       const merged = response.choices[0]?.message?.content;
       if (merged) {
-        await fs.writeFile(path.join(workDir, "DESIGN.md"), merged, "utf-8");
+        await writeDesign(merged);
         createLogger("orchestrator").info(`Merged ${designFiles.length} design documents via OpenAI`, undefined, "flow");
         return;
       }
@@ -260,7 +271,7 @@ async function mergeDesignOutputs(
   const concatenated = designFiles.map((d) =>
     `# ${d.agent} Design\n\n${d.content}`,
   ).join("\n\n---\n\n");
-  await fs.writeFile(path.join(workDir, "DESIGN.md"), concatenated, "utf-8");
+  await writeDesign(concatenated);
   createLogger("orchestrator").info(`Concatenated ${designFiles.length} design documents`, undefined, "flow");
 }
 
@@ -537,6 +548,88 @@ async function readDesignPreview(workDir: string): Promise<string> {
   }
 }
 
+const MAX_OVERSEER_DESIGN_ITERATIONS = 1;
+const MAX_OVERSEER_CODE_ITERATIONS = 1;
+
+interface OverseerDesignReviewResult {
+  fit: "ok" | "gaps";
+  gaps?: string[];
+  suggestedSubTask?: { prompt: string };
+}
+
+interface OverseerCodeReviewResult {
+  fit: "ok" | "drift";
+  missingOrWrong?: string[];
+  suggestedSubTask?: { prompt: string };
+}
+
+async function overseerPostDesignReview(workDir: string, originalTask: string): Promise<OverseerDesignReviewResult | null> {
+  if (!process.env.OPENAI_API_KEY) return null;
+  try {
+    const content = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
+    const designSlice = content.slice(0, 24000);
+    const { default: OpenAI } = await import("openai");
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const response = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: "You are an Overseer reviewing a design document against the user's original task. Decide if the design covers every requirement from the Original task section. Respond with JSON only: { \"fit\": \"ok\" | \"gaps\", \"gaps\": [\"gap1\", \"gap2\"] (if fit is gaps, list missing or underspecified requirements), \"suggestedSubTask\": { \"prompt\": \"focused instructions for designers to address the gaps\" } (optional, if fit is gaps) }. Be concise.",
+        },
+        { role: "user", content: `## Original task\n\n${originalTask.slice(0, 8000)}\n\n## Design document\n\n${designSlice}` },
+      ],
+      max_tokens: 1024,
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+    });
+    const raw = response.choices[0]?.message?.content;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as OverseerDesignReviewResult;
+    if (parsed.fit !== "ok" && parsed.fit !== "gaps") parsed.fit = "ok";
+    return parsed;
+  } catch (err) {
+    createLogger("orchestrator").warn("Overseer post-design review failed", { err: String(err) }, "flow");
+    return null;
+  }
+}
+
+async function overseerPostCodeReview(workDir: string, originalTask: string): Promise<OverseerCodeReviewResult | null> {
+  if (!process.env.OPENAI_API_KEY) return null;
+  try {
+    const designContent = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
+    const designSlice = designContent.slice(0, 24000);
+    const brief = buildContextBrief("planning", workDir);
+    const fileTree = brief.fileTree || "(no file tree)";
+    const { default: OpenAI } = await import("openai");
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const response = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: "You are an Overseer reviewing implementation against the design and original task. You receive the design document and a file tree. Decide if the implementation (inferred from the file tree and project layout) matches the design and covers the Original task requirements. Respond with JSON only: { \"fit\": \"ok\" | \"drift\", \"missingOrWrong\": [\"item1\", \"item2\"] (if fit is drift), \"suggestedSubTask\": { \"prompt\": \"focused instructions for the coder to add or fix these items\" } (optional, if fit is drift) }. Be concise.",
+        },
+        {
+          role: "user",
+          content: `## Original task\n\n${originalTask.slice(0, 6000)}\n\n## Design\n\n${designSlice.slice(0, 12000)}\n\n## File tree\n\`\`\`\n${fileTree}\n\`\`\``,
+        },
+      ],
+      max_tokens: 1024,
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+    });
+    const raw = response.choices[0]?.message?.content;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as OverseerCodeReviewResult;
+    if (parsed.fit !== "ok" && parsed.fit !== "drift") parsed.fit = "ok";
+    return parsed;
+  } catch (err) {
+    createLogger("orchestrator").warn("Overseer post-code review failed", { err: String(err) }, "flow");
+    return null;
+  }
+}
+
 async function planWithBigBoss(
   prompt: string,
   workDir: string,
@@ -635,6 +728,8 @@ export async function runPipeline(task: MvpTask): Promise<void> {
   const isTrivial = complexity === "trivial";
   let designLoops = 0;
   let designFeedback: string | undefined;
+  let designReviewIterations = 0;
+  let codeReviewIterations = 0;
   let feedbackFingerprint: string | undefined;
   let groupIndex = 0;
 
@@ -660,7 +755,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
       const parallelPromises = group.stageDefs.map(async (stage) => {
         let stagePrompt = task.prompt;
         if (stage.category === "design" && designFeedback) {
-          stagePrompt += `\n\n## Feedback from previous coding pass\n${designFeedback}`;
+          stagePrompt += `\n\n## Feedback to incorporate into your design\n${designFeedback}`;
         }
 
         const briefKey = stage.agent;
@@ -731,8 +826,26 @@ export async function runPipeline(task: MvpTask): Promise<void> {
 
       // Merge parallel design outputs if this was a design group
       if (group.stageDefs[0]?.category === "design" && group.stageDefs.length > 1) {
-        await mergeDesignOutputs(workDir, parallelResults);
+        await mergeDesignOutputs(workDir, parallelResults, task.prompt);
         taskStore.emit_log(task.id, `Merged ${group.stageDefs.length} design documents`);
+
+        // Overseer: post-design review for requirements fit
+        const designReview = await overseerPostDesignReview(workDir, task.prompt);
+        if (designReview?.fit === "gaps" && designReviewIterations < MAX_OVERSEER_DESIGN_ITERATIONS) {
+          designReviewIterations++;
+          designFeedback = designReview.suggestedSubTask?.prompt
+            ? `Overseer found gaps; address these in your design:\n${designReview.suggestedSubTask.prompt}`
+            : `Overseer found gaps: ${(designReview.gaps || []).join("; ")}`;
+          taskStore.emit_log(task.id, `Overseer design review: gaps found (iteration ${designReviewIterations}). Re-running design.`);
+          log.info("Overseer design review: re-running design for gaps", { gaps: designReview.gaps }, "flow");
+          upstreamResults.splice(upstreamResults.length - group.stageDefs.length, group.stageDefs.length);
+          for (const s of group.stageDefs) {
+            taskStore.updateStage(task.id, s.name, { status: "pending" as const });
+          }
+          continue;
+        } else if (designReview?.fit === "ok") {
+          taskStore.emit_log(task.id, "Overseer design review: design fits requirements.");
+        }
 
         // Design approval after merge
         if (task.requireDesignApproval) {
@@ -860,6 +973,18 @@ export async function runPipeline(task: MvpTask): Promise<void> {
           taskStore.updateStage(task.id, stage.name, stageUpdate);
           log.info(`Stage ${stage.name} completed: ${result.filesModified?.length ?? 0} files, ${(result.durationMs / 1000).toFixed(1)}s, $${result.estimatedCost?.toFixed(4) ?? "N/A"}`, { stage: stage.name, files: result.filesModified?.length ?? 0, durationMs: result.durationMs, cost: result.estimatedCost }, "output");
 
+          // Prepend original task to DESIGN.md when a single design stage produced it (sequential path)
+          if (stage.category === "design" && result.success) {
+            try {
+              const designPath = path.join(workDir, "DESIGN.md");
+              let content = await fs.readFile(designPath, "utf-8");
+              if (content && !content.startsWith("## Original task")) {
+                content = prependOriginalTaskToDesign(workDir, content, task.prompt);
+                await fs.writeFile(designPath, content, "utf-8");
+              }
+            } catch { /* DESIGN.md may not exist yet */ }
+          }
+
           // --- Design approval gate ---
           if (stage.category === "design" && task.requireDesignApproval) {
             const summary = await bigBossSummarize(workDir, "DESIGN.md", "design");
@@ -921,6 +1046,33 @@ export async function runPipeline(task: MvpTask): Promise<void> {
             } else if (lint?.passed) {
               log.info(`Lint/build passed (${lint.command})`, undefined, "status");
               taskStore.emit_log(task.id, `Code compiles cleanly (${lint.command}).`);
+            }
+          }
+
+          // --- Overseer: post-code review ---
+          if (stage.category === "coding" && result.success && codeReviewIterations < MAX_OVERSEER_CODE_ITERATIONS) {
+            const codeReview = await overseerPostCodeReview(workDir, task.prompt);
+            if (codeReview?.fit === "drift" && codeReview.suggestedSubTask?.prompt) {
+              codeReviewIterations++;
+              taskStore.emit_log(task.id, `Overseer code review: drift found. Running fix-up pass (${codeReviewIterations}).`);
+              log.info("Overseer code review: re-running coder for drift", { missingOrWrong: codeReview.missingOrWrong }, "flow");
+              const overseerConfig: AgentRunConfig = {
+                ...baseConfig,
+                prompt: `${task.prompt}\n\n## Overseer code review\n${codeReview.suggestedSubTask.prompt}`,
+                agentType: stage.agent,
+                category: "coding",
+                workspaceReady: true,
+                trivial: isTrivial,
+                upstreamResults: [...upstreamResults],
+                agentBrief: agentBriefs[stage.agent] ?? null,
+              };
+              const overseerResult = await runAgent(overseerConfig, workDir, undefined, signal);
+              upstreamResults.push(overseerResult);
+              if (overseerResult.success) {
+                taskStore.emit_log(task.id, `Overseer fix-up completed: ${overseerResult.filesModified?.length ?? 0} files.`);
+              }
+            } else if (codeReview?.fit === "ok") {
+              taskStore.emit_log(task.id, "Overseer code review: implementation fits design and task.");
             }
           }
 
