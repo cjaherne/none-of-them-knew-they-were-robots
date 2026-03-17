@@ -63,6 +63,10 @@ export async function handler(
           name: "validation",
           agents: [{ type: "testing" }],
         },
+        {
+          name: "release",
+          agents: [{ type: "release" }],
+        },
       ],
     };
 

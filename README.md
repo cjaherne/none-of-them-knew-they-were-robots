@@ -18,8 +18,9 @@ Agents are organised into categories that define their pipeline position:
 | **Design** | Graphics Designer | Color palettes, typography, CSS tokens | Filesystem |
 | **Coding** | Coding Agent | Implements code from design specs | Filesystem, GitHub |
 | **Validation** | Testing Agent | Unit tests, integration tests, E2E | Filesystem, Playwright |
+| **Release** | Release Agent | Updates README, bumps SemVer, commits, creates PR | Filesystem, GitHub |
 
-New specialist agents can be added by creating a skill pack directory and a registry entry -- no code changes needed.
+New specialist agents can be added by creating a skill pack directory and a registry entry -- no code changes needed. The **Release** agent runs automatically at the end of every successful pipeline (when a repo is configured) to prepare the branch for a pull request.
 
 ### Architecture
 
@@ -265,6 +266,10 @@ For complex tasks, BigBoss can fan out design work to multiple specialist design
 
 Structured logging and task history are persisted in SQLite (`test-harness/data/logs.db`). The server exposes `GET /logs`, `GET /tasks/history`, `GET /tasks/:id/detail`, and `POST /config/log-level`; the event log shows level badges and category tags, and the History tab lists past prompts with full log detail. Debug logs are written to `%TEMP%/agent-mvp-logs`.
 
+#### Event log improvements
+
+While agents run, the event log shows real-time progress: elapsed time and files edited. Stage logs (design, coding, testing, release) are nested in collapsible blocks that auto-expand while a stage is active and auto-collapse when it completes with a summary. Click a stage header to toggle it open or closed.
+
 ### Voice command (cloud)
 
 1. Open `client/web/index.html` on your phone
@@ -289,6 +294,9 @@ curl https://YOUR_API/setup/status
 
 # Get task status
 curl https://YOUR_API/tasks/{taskId}
+
+# Get task detail with logs (cloud parity with local)
+curl https://YOUR_API/tasks/{taskId}/detail
 ```
 
 ### Direct K8s pipeline

@@ -198,6 +198,29 @@ class TaskStore {
     });
   }
 
+  emitStageProgress(
+    taskId: string,
+    stageName: string,
+    progress: { elapsedSeconds: number; filesEdited: number },
+  ): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    const stage = task.stages.find((s) => s.name === stageName);
+    if (!stage) return;
+    this.emit(taskId, {
+      taskId,
+      agent: stage.agent,
+      type: "stage_progress",
+      message: `Stage "${stageName}" progress`,
+      data: {
+        stageName,
+        elapsedSeconds: progress.elapsedSeconds,
+        filesEdited: progress.filesEdited,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   subscribe(
     taskId: string,
     listener: (event: TaskStreamEvent) => void,

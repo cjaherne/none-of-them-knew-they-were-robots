@@ -1,0 +1,6 @@
+{
+  "maxTokens": 4096,
+  "forbiddenActions": [],
+  "requiredOutputFields": [],
+  "timeoutMs": 180000
+}

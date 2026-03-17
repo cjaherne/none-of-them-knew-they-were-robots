@@ -168,10 +168,10 @@ function parseAgentOutput(stdout: string): ParsedOutput {
   };
 }
 
-export type AgentEventCallback = (event: {
-  type: "log" | "output" | "error";
-  content: string;
-}) => void;
+export type AgentEventCallback = (event:
+  | { type: "log" | "output" | "error"; content: string }
+  | { type: "progress"; elapsedSeconds: number; filesEdited: number }
+) => void;
 
 const INJECTED_PATH_PREFIX = ".cursor/";
 const PIPELINE_PATH_PREFIX = ".pipeline/";
@@ -295,12 +295,29 @@ and framework. Check the available npm scripts for existing test commands.
 Write all test files to disk and execute them.
 `.trim();
 
+const PREAMBLE_RELEASE = `
+You are running as a local CLI agent with full file-system and git access.
+Your role in this pipeline is RELEASE PREP — prepare the branch for a Pull Request.
+
+You must:
+1. Update the README based on the branch's changes
+2. Bump the version in package.json using SemVer
+3. Commit all changes with a conventional commit message
+4. Push the branch
+5. Create a PR to the base branch using \`gh pr create\`
+
+The BASE_BRANCH for the PR is provided in the task context below. Use it for \`git log <BASE_BRANCH>..HEAD\` and \`gh pr create --base <BASE_BRANCH>\`.
+
+Do NOT merge the PR or create tags. Only create the PR.
+`.trim();
+
 function getPreamble(category: string, parallelDesign?: boolean): string {
   switch (category) {
     case "planning": return PREAMBLE_PLANNING;
     case "design": return parallelDesign ? PREAMBLE_DESIGN_PARALLEL : PREAMBLE_DESIGN;
     case "coding": return PREAMBLE_CODING;
     case "validation": return PREAMBLE_TESTING;
+    case "release": return PREAMBLE_RELEASE;
     default: return PREAMBLE_CODING;
   }
 }
@@ -1197,6 +1214,15 @@ function runAgentCli(
 
     let stdout = "";
     let stderr = "";
+    const startTime = Date.now();
+    let filesEdited = 0;
+
+    const emitProgress = () => {
+      const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+      onEvent?.({ type: "progress", elapsedSeconds, filesEdited });
+    };
+
+    const progressInterval = setInterval(emitProgress, 1000);
 
     proc.stdout.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
@@ -1208,6 +1234,13 @@ function runAgentCli(
           const event = JSON.parse(trimmed);
           if (event.content) {
             onEvent?.({ type: "output", content: event.content });
+          }
+          if (event.type === "tool_call" && event.subtype === "completed") {
+            const tc = event.tool_call;
+            if (tc?.editToolCall?.result?.success?.path) {
+              filesEdited++;
+              emitProgress();
+            }
           }
         } catch {
           onEvent?.({ type: "output", content: trimmed });
@@ -1241,6 +1274,7 @@ function runAgentCli(
     }
 
     proc.on("close", (code) => {
+      clearInterval(progressInterval);
       clearTimeout(timer);
       if (cancelled) {
         stderr += `\n[harness] Agent CLI cancelled by user`;
@@ -1252,6 +1286,7 @@ function runAgentCli(
     });
 
     proc.on("error", (err) => {
+      clearInterval(progressInterval);
       clearTimeout(timer);
       reject(err);
     });

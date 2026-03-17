@@ -55,6 +55,8 @@ const pipelinePanel = document.getElementById("pipelinePanel");
 const pipelineTaskId = document.getElementById("pipelineTaskId");
 const stageDetail = document.getElementById("stageDetail");
 const taskLog = document.getElementById("taskLog");
+const logEntriesTop = document.getElementById("logEntriesTop");
+const stageBlocks = document.getElementById("stageBlocks");
 const logLevelSelect = document.getElementById("logLevelSelect");
 const tabLive = document.getElementById("tabLive");
 const tabHistory = document.getElementById("tabHistory");
@@ -327,11 +329,11 @@ async function sendTextCommand() {
 
   try {
     const result = await adapter.submitCommand(params);
-    addLogEntry(`Task ${result.taskId.slice(0, 8)}... queued`, "pending");
     statusEl.textContent = `Pipeline running for ${result.taskId.slice(0, 8)}...`;
     speak("Starting pipeline. Analyzing your request.");
     showPipeline(result.taskId);
     connectStream(result.taskId);
+    addLogEntry(`Task ${result.taskId.slice(0, 8)}... queued`, "pending", null);
   } catch (err) {
     addLogEntry(`Error: ${err.message}`, "error");
     statusEl.textContent = adapter.type === "local"
@@ -467,11 +469,11 @@ async function handleRecordingFallback() {
         textInput.value = result.transcript;
         textInputMobile.value = result.transcript;
       }
-      addLogEntry(`Task ${result.taskId.slice(0, 8)}... queued (voice)`, "pending");
       statusEl.textContent = `Pipeline running for ${result.taskId.slice(0, 8)}...`;
       speak("Starting pipeline. Analyzing your request.");
       showPipeline(result.taskId);
       connectStream(result.taskId);
+      addLogEntry(`Task ${result.taskId.slice(0, 8)}... queued (voice)`, "pending", null);
     } catch (err) {
       addLogEntry(`Error: ${err.message}`, "error");
       statusEl.textContent = adapter.type === "local"
@@ -624,6 +626,69 @@ function renderAllStageDetails(stages) {
 let activeRunningEntry = null;
 let activeRunningStage = null;
 let activeRunningStart = null;
+let activeRunningFilesEdited = 0;
+let runningIndicatorInterval = null;
+const stageBlockMap = {};
+
+function ensureStageBlocks(stages) {
+  if (!stages || stages.length === 0 || !stageBlocks) return;
+  for (const s of stages) {
+    if (stageBlockMap[s.name]) continue;
+    const block = document.createElement("div");
+    block.className = "stage-block collapsed";
+    block.dataset.stage = s.name;
+    block.innerHTML = `
+      <div class="stage-block-header" data-stage="${escapeHtml(s.name)}">
+        <span class="stage-block-toggle">&#9660;</span>
+        <span class="stage-block-name">${escapeHtml(s.agent || s.name)}</span>
+        <span class="stage-block-summary"></span>
+        <span class="stage-block-status pending">pending</span>
+      </div>
+      <div class="stage-block-body"></div>
+    `;
+    const header = block.querySelector(".stage-block-header");
+    const body = block.querySelector(".stage-block-body");
+    header.addEventListener("click", () => {
+      block.classList.toggle("expanded");
+      block.classList.toggle("collapsed", !block.classList.contains("expanded"));
+    });
+    stageBlocks.appendChild(block);
+    stageBlockMap[s.name] = { block, header, body };
+  }
+}
+
+function expandStageBlock(stageName) {
+  const entry = stageBlockMap[stageName];
+  if (!entry) return;
+  entry.block.classList.add("expanded");
+  entry.block.classList.remove("collapsed");
+  const statusEl = entry.block.querySelector(".stage-block-status");
+  if (statusEl) statusEl.textContent = "running";
+  if (statusEl) statusEl.className = "stage-block-status running";
+}
+
+function collapseStageBlock(stageName, summary, status) {
+  const entry = stageBlockMap[stageName];
+  if (!entry) return;
+  entry.block.classList.remove("expanded");
+  entry.block.classList.add("collapsed");
+  const summaryEl = entry.block.querySelector(".stage-block-summary");
+  const statusEl = entry.block.querySelector(".stage-block-status");
+  if (summaryEl) summaryEl.textContent = summary;
+  if (statusEl) {
+    statusEl.textContent = status;
+    statusEl.className = "stage-block-status " + status;
+  }
+}
+
+function getStageBlockBody(stageName) {
+  return stageBlockMap[stageName]?.body || null;
+}
+
+function clearStageBlocks() {
+  if (stageBlocks) stageBlocks.innerHTML = "";
+  for (const k of Object.keys(stageBlockMap)) delete stageBlockMap[k];
+}
 
 function connectStream(taskId) {
   if (currentStreamHandle) {
@@ -633,22 +698,32 @@ function connectStream(taskId) {
   activeRunningEntry = null;
   activeRunningStage = null;
   activeRunningStart = null;
+  activeRunningFilesEdited = 0;
+  if (runningIndicatorInterval) {
+    clearInterval(runningIndicatorInterval);
+    runningIndicatorInterval = null;
+  }
+
+  clearStageBlocks();
+  if (logEntriesTop) logEntriesTop.innerHTML = "";
 
   currentStreamHandle = adapter.streamTask(taskId, handleStreamEvent);
 }
 
 function handleStreamEvent(data) {
   try {
-    if (handleLogEntryEvent(data)) return;
+    if (handleLogEntryEvent(data, activeRunningStage)) return;
 
     if (data.type === "error") {
       finalizeRunningIndicator();
-      addLogEntry(data.message || "Connection lost", "error");
+      addLogEntry(data.message || "Connection lost", "error", null);
       return;
     }
 
     if (data.type === "snapshot") {
-      updateStages(data.task?.stages);
+      const stages = data.task?.stages;
+      updateStages(stages);
+      ensureStageBlocks(stages);
       return;
     }
 
@@ -660,12 +735,15 @@ function handleStreamEvent(data) {
 
     if (data.data?.stages) {
       updateStages(data.data.stages);
+      ensureStageBlocks(data.data.stages);
     }
 
     if (data.type === "status_change" && data.message?.includes("Pipeline stages set")) {
-      const stageNames = (data.data?.stages || []).map((s) => s.name).join(" → ");
+      const stages = data.data?.stages || [];
+      ensureStageBlocks(stages);
+      const stageNames = stages.map((s) => s.name).join(" → ");
       if (stageNames) {
-        addLogEntry(`Pipeline: ${stageNames}`, "info");
+        addLogEntry(`Pipeline: ${stageNames}`, "info", null);
         speak(`This needs ${stageNames.replace(/→/g, "then")}.`);
       }
       return;
@@ -679,13 +757,19 @@ function handleStreamEvent(data) {
 
         if (stageStatus === "running") {
           if (activeRunningStage === stageName) {
-            updateRunningIndicator(stageName);
+            updateRunningIndicator();
             return;
           }
           finalizeRunningIndicator();
+          ensureStageBlocks(data.data?.stages || []);
           activeRunningStage = stageName;
           activeRunningStart = Date.now();
+          activeRunningFilesEdited = 0;
+          expandStageBlock(stageName);
           activeRunningEntry = addRunningIndicator(stageName, data.agent || data.data?.agent);
+          if (!runningIndicatorInterval) {
+            runningIndicatorInterval = setInterval(updateRunningIndicator, 1000);
+          }
           return;
         }
 
@@ -696,7 +780,7 @@ function handleStreamEvent(data) {
       }
 
       if (!stageMatch && msg) {
-        addLogEntry(msg, "info");
+        addLogEntry(msg, "info", activeRunningStage);
       }
       return;
     }
@@ -705,16 +789,20 @@ function handleStreamEvent(data) {
       const s = data.data.stage;
       finalizeRunningIndicator();
 
+      const stageName = s.name;
       if (s.status === "succeeded") {
         const files = s.filesModified?.length || 0;
         const dur = s.durationMs ? `${(s.durationMs / 1000).toFixed(0)}s` : "";
         const cost = s.estimatedCost ? ` · $${s.estimatedCost.toFixed(4)}` : "";
         const notes = s.notes ? ` · feedback logged` : "";
-        addLogEntry(`${s.agent || s.name} completed — ${files} file(s)${dur ? ` in ${dur}` : ""}${cost}${notes}`, "success");
+        const summary = `${files} file(s)${dur ? ` in ${dur}` : ""}${cost}${notes}`;
+        collapseStageBlock(stageName, `— ${summary}`, "succeeded");
+        addLogEntry(`${s.agent || s.name} completed ${summary}`, "success", stageName);
         speak(`${s.name} complete. ${files} files modified${dur ? ` in ${dur}` : ""}.`);
       } else if (s.status === "failed") {
         const err = s.errors?.length ? `: ${s.errors[0]}` : "";
-        addLogEntry(`${s.agent || s.name} failed${err}`, "error");
+        collapseStageBlock(stageName, err ? `— ${err}` : "— failed", "failed");
+        addLogEntry(`${s.agent || s.name} failed${err}`, "error", stageName);
         speak(`${s.name} stage failed.`);
       }
       return;
@@ -735,31 +823,42 @@ function handleStreamEvent(data) {
           if (s.estimatedCost) totalCost += s.estimatedCost;
         });
         const costStr = totalCost > 0 ? ` · $${totalCost.toFixed(4)}` : "";
-        addLogEntry(`Pipeline complete — ${totalFiles.size} file(s) modified${costStr}`, "success");
+        addLogEntry(`Pipeline complete — ${totalFiles.size} file(s) modified${costStr}`, "success", null);
         speak(`Pipeline complete. ${totalFiles.size} files modified across all stages.`);
       } else if (data.data?.status === "failed") {
         const errMsg = data.data?.error || "unknown error";
         statusEl.textContent = "Pipeline failed";
         cancelBtn.style.display = "none";
         currentRunningTaskId = null;
-        addLogEntry(`Pipeline failed: ${errMsg}`, "error");
+        addLogEntry(`Pipeline failed: ${errMsg}`, "error", null);
         speak(`Pipeline failed. ${errMsg}.`);
       } else if (data.data?.status === "cancelled") {
         statusEl.textContent = "Pipeline cancelled";
         cancelBtn.style.display = "none";
         currentRunningTaskId = null;
         approvalBanner.classList.remove("visible");
-        addLogEntry("Pipeline cancelled by user", "error");
+        addLogEntry("Pipeline cancelled by user", "error", null);
       } else if (data.message && !data.message.includes("Stage")) {
-        addLogEntry(data.message, "info");
+        addLogEntry(data.message, "info", null);
       }
       return;
     }
 
     if (data.type === "approval_required") {
       finalizeRunningIndicator();
-      addLogEntry(`Awaiting approval: ${data.data?.approvalType || "review"}`, "pending");
+      addLogEntry(`Awaiting approval: ${data.data?.approvalType || "review"}`, "pending", activeRunningStage);
       handleApprovalRequired(data);
+      return;
+    }
+
+    if (data.type === "stage_progress" && data.data && activeRunningEntry) {
+      const elapsed = data.data.elapsedSeconds;
+      const files = data.data.filesEdited ?? 0;
+      activeRunningFilesEdited = files;
+      const elSpan = activeRunningEntry.querySelector(".elapsed");
+      const filesSpan = activeRunningEntry.querySelector(".files-edited");
+      if (elSpan) elSpan.textContent = `${elapsed}s`;
+      if (filesSpan) filesSpan.textContent = `${files} file${files !== 1 ? "s" : ""}`;
       return;
     }
   } catch {
@@ -772,8 +871,9 @@ function addRunningIndicator(stageName, agent) {
   entry.className = "log-entry running-indicator";
   const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const displayName = agent ? `${agent}` : stageName;
-  entry.innerHTML = `<span class="time">${time}</span><span class="log-msg"><span class="spinner"></span> ${escapeHtml(displayName)} running <span class="elapsed">0s</span></span>`;
-  taskLog.appendChild(entry);
+  entry.innerHTML = `<span class="time">${time}</span><span class="log-msg"><span class="spinner"></span> ${escapeHtml(displayName)} running <span class="elapsed">0s</span> · <span class="files-edited">0 files</span></span>`;
+  const target = getStageBlockBody(stageName) || logEntriesTop || taskLog;
+  target.appendChild(entry);
   entry.scrollIntoView({ behavior: "smooth" });
   return entry;
 }
@@ -782,25 +882,33 @@ function updateRunningIndicator() {
   if (!activeRunningEntry || !activeRunningStart) return;
   const elapsed = Math.floor((Date.now() - activeRunningStart) / 1000);
   const elSpan = activeRunningEntry.querySelector(".elapsed");
+  const filesSpan = activeRunningEntry.querySelector(".files-edited");
   if (elSpan) elSpan.textContent = `${elapsed}s`;
+  if (filesSpan) filesSpan.textContent = `${activeRunningFilesEdited} file${activeRunningFilesEdited !== 1 ? "s" : ""}`;
 }
 
 function finalizeRunningIndicator() {
+  if (runningIndicatorInterval) {
+    clearInterval(runningIndicatorInterval);
+    runningIndicatorInterval = null;
+  }
   if (activeRunningEntry) {
     activeRunningEntry.remove();
     activeRunningEntry = null;
     activeRunningStage = null;
     activeRunningStart = null;
+    activeRunningFilesEdited = 0;
   }
 }
 
 // --- Log entries ---
-function addLogEntry(message, type = "pending") {
+function addLogEntry(message, type = "pending", stageName = null) {
   const entry = document.createElement("div");
   entry.className = `log-entry ${type}`;
   const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   entry.innerHTML = `<span class="time">${time}</span><span class="log-msg">${escapeHtml(message)}</span>`;
-  taskLog.appendChild(entry);
+  const target = (stageName && getStageBlockBody(stageName)) ? getStageBlockBody(stageName) : (logEntriesTop || taskLog);
+  target.appendChild(entry);
   entry.scrollIntoView({ behavior: "smooth" });
   return entry;
 }
@@ -832,8 +940,8 @@ logLevelSelect.addEventListener("change", async () => {
 });
 
 // --- Structured log entry rendering ---
-function addStructuredLogEntry(entry) {
-  if (LOG_LEVEL_PRIORITY[entry.level] < LOG_LEVEL_PRIORITY[currentLogLevelFilter]) return;
+function addStructuredLogEntry(entry, stageName = null) {
+  if (LOG_LEVEL_PRIORITY[entry.level] < LOG_LEVEL_PRIORITY[currentLogLevelFilter]) return null;
 
   const el = document.createElement("div");
   el.className = "log-entry";
@@ -848,15 +956,21 @@ function addStructuredLogEntry(entry) {
   const catTag = entry.category ? `<span class="log-category-indicator">${entry.category}</span>` : "";
 
   el.innerHTML = `<span class="time">${time}</span><span class="log-level-badge ${entry.level}">${entry.level}</span><span class="log-source-tag">${escapeHtml(entry.source)}</span>${catTag}<span class="log-msg">${escapeHtml(entry.message)}</span>`;
-  taskLog.appendChild(el);
+  const target = (stageName && getStageBlockBody(stageName)) ? getStageBlockBody(stageName) : (logEntriesTop || taskLog);
+  target.appendChild(el);
   el.scrollIntoView({ behavior: "smooth" });
   return el;
 }
 
-// --- Handle log_entry events from SSE ---
-function handleLogEntryEvent(data) {
+// --- Handle log_entry events from SSE / WebSocket ---
+function handleLogEntryEvent(data, stageContext = null) {
   if (data.type === "log_entry") {
-    addStructuredLogEntry(data);
+    addStructuredLogEntry(data, stageContext);
+    return true;
+  }
+  if (data.type === "log" && data.data?.type === "log_entry") {
+    const entry = { ...data.data, message: data.message || data.data.message };
+    addStructuredLogEntry(entry, stageContext);
     return true;
   }
   return false;
