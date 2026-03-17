@@ -18,7 +18,7 @@ Agents are organised into categories that define their pipeline position:
 | **Design** | Graphics Designer | Color palettes, typography, CSS tokens | Filesystem |
 | **Coding** | Coding Agent | Implements code from design specs | Filesystem, GitHub |
 | **Validation** | Testing Agent | Unit tests, integration tests, E2E | Filesystem, Playwright |
-| **Release** | Release Agent | Updates README, bumps SemVer, commits, creates PR | Filesystem, GitHub |
+| **Release** | Release Agent | Updates README, bumps SemVer in appropriate version file, commits, creates and pushes version tag, creates PR | Filesystem, GitHub |
 
 New specialist agents can be added by creating a skill pack directory and a registry entry -- no code changes needed. The **Release** agent runs automatically at the end of every successful pipeline (when a repo is configured) to prepare the branch for a pull request.
 
