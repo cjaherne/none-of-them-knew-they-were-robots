@@ -264,7 +264,7 @@ A **codebase summary cache** (`.pipeline/context-cache.json`) persists per-file 
 
 #### Parallel design stages
 
-For complex tasks, BigBoss can fan out design work to multiple specialist designers (UX, Core Code, Graphics) running in parallel. Each writes to `.pipeline/<agent>-design.md`, and the orchestrator merges them into a unified `DESIGN.md` (via OpenAI merge or concatenation fallback) before passing to the coding stage.
+For complex tasks, BigBoss can fan out design work to multiple specialist designers (UX, Core Code, Graphics, Game Designer) running in parallel. For full videogame or Lua/LÖVE tasks it selects game-designer, core-code-designer, ux-designer, and graphics-designer together. Each designer writes to `.pipeline/<agent>-design.md`; the orchestrator merges these into a unified `DESIGN.md` (via OpenAI merge or concatenation fallback) before the coding stage. The Test Harness counts each design output file so the UI shows one file per designer (e.g. "1 file(s)" for each).
 
 Structured logging and task history are persisted in SQLite (`test-harness/data/logs.db`). The server exposes `GET /logs`, `GET /tasks/history`, `GET /tasks/:id/detail`, and `POST /config/log-level`; the event log shows level badges and category tags, and the History tab lists past prompts with full log detail. Debug logs are written to `%TEMP%/agent-mvp-logs`.
 
