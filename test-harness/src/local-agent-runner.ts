@@ -301,14 +301,15 @@ Your role in this pipeline is RELEASE PREP — prepare the branch for a Pull Req
 
 You must:
 1. Update the README based on the branch's changes
-2. Bump the version in package.json using SemVer
+2. Bump the version in the appropriate version file (package.json, pom.xml, Cargo.toml, pyproject.toml, Chart.yaml, or build.gradle) using SemVer
 3. Commit all changes with a conventional commit message
 4. Push the branch
-5. Create a PR to the base branch using \`gh pr create\`
+5. Create and push a tag for the new version after pushing the branch
+6. Create a PR to the base branch using \`gh pr create\`
 
 The BASE_BRANCH for the PR is provided in the task context below. Use it for \`git log <BASE_BRANCH>..HEAD\` and \`gh pr create --base <BASE_BRANCH>\`.
 
-Do NOT merge the PR or create tags. Only create the PR.
+Do NOT merge the PR. Create and push a tag for the new version after pushing the branch.
 `.trim();
 
 function getPreamble(category: string, parallelDesign?: boolean): string {
