@@ -52,10 +52,28 @@ agents:
       cpu: "1"
     cursorFlags: ["--force", "--trust", "--output-format", "stream-json"]
 
+  - type: game-designer
+    displayName: Game Designer
+    category: design
+    skillPack: game-designer
+    resources:
+      memory: "2Gi"
+      cpu: "1"
+    cursorFlags: ["--force", "--trust", "--output-format", "stream-json"]
+
   - type: coding
     displayName: Coding Agent
     category: coding
     skillPack: coding
+    resources:
+      memory: "4Gi"
+      cpu: "2"
+    cursorFlags: ["--force", "--trust", "--output-format", "stream-json"]
+
+  - type: lua-coding
+    displayName: Lua Coding Agent
+    category: coding
+    skillPack: lua-coding
     resources:
       memory: "4Gi"
       cpu: "2"

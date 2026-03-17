@@ -41,3 +41,4 @@ Respond with JSON containing:
 - Prefer CSS custom properties for theming
 - Keep animations subtle and purposeful
 - Design for both light and dark modes when appropriate
+- You may search the web and read linked content when needed (color tools, typography references, design systems) using the fetch tool

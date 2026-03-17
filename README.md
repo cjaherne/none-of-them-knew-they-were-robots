@@ -12,15 +12,17 @@ Agents are organised into categories that define their pipeline position:
 
 | Category | Agents | Role | MCP Tools |
 |----------|--------|------|-----------|
-| **Analysis** | BigBoss | Analyses tasks, plans agent pipelines | Filesystem, GitHub |
-| **Design** | UX Designer | User flows, wireframes, accessibility | Filesystem, Playwright |
+| **Analysis** | BigBoss | Analyses tasks, plans agent pipelines; selects which design/coding agents run | Filesystem, GitHub |
+| **Design** | UX Designer | User flows, wireframes, accessibility (web and game UIs) | Filesystem, Playwright, Fetch |
 | **Design** | Core Code Designer | Architecture, data models, API contracts | Filesystem, GitHub |
-| **Design** | Graphics Designer | Color palettes, typography, CSS tokens | Filesystem |
-| **Coding** | Coding Agent | Implements code from design specs | Filesystem, GitHub |
+| **Design** | Graphics Designer | Color palettes, typography, CSS tokens, art direction | Filesystem, Fetch |
+| **Design** | Game Designer | Game mechanics, controls (keyboard + gamepad), game loop, Lua/LÖVE2D structure | Filesystem |
+| **Coding** | Coding Agent | Implements code (TypeScript, Python, web) from design specs | Filesystem, GitHub |
+| **Coding** | Lua Coding Agent | Implements Lua and LÖVE2D games from design specs | Filesystem, GitHub |
 | **Validation** | Testing Agent | Unit tests, integration tests, E2E | Filesystem, Playwright |
 | **Release** | Release Agent | Updates README, bumps SemVer in appropriate version file, commits, creates and pushes version tag, creates PR | Filesystem, GitHub |
 
-New specialist agents can be added by creating a skill pack directory and a registry entry -- no code changes needed. The **Release** agent runs automatically at the end of every successful pipeline (when a repo is configured) to prepare the branch for a pull request.
+BigBoss uses a full stage/agent structure to select which designers and coders run (e.g. for Lua games: Game Designer + Lua Coding Agent; for web UI: UX + Graphics + Core Code Designer). UX and Graphics designers have Fetch MCP for web search and URL content (e.g. accessibility standards, color tools); requires `uvx` for the fetch server. New specialist agents can be added by creating a skill pack directory and a registry entry. The **Release** agent runs automatically at the end of every successful pipeline (when a repo is configured).
 
 ### Architecture
 
@@ -262,7 +264,7 @@ A **codebase summary cache** (`.pipeline/context-cache.json`) persists per-file 
 
 #### Parallel design stages
 
-For complex tasks, BigBoss can fan out design work to multiple specialist designers (UX, Core Code, Graphics) running in parallel. Each writes to `.pipeline/<agent>-design.md`, and the orchestrator merges them into a unified `DESIGN.md` (via OpenAI merge or concatenation fallback) before passing to the coding stage.
+For complex tasks, BigBoss can fan out design work to multiple specialist designers (UX, Core Code, Graphics, Game Designer) running in parallel. For full videogame or Lua/LÖVE tasks it selects game-designer, core-code-designer, ux-designer, and graphics-designer together. Each designer writes to `.pipeline/<agent>-design.md`; the orchestrator merges these into a unified `DESIGN.md` (via OpenAI merge or concatenation fallback) before the coding stage. The Test Harness counts each design output file so the UI shows one file per designer (e.g. "1 file(s)" for each).
 
 Structured logging and task history are persisted in SQLite (`test-harness/data/logs.db`). The server exposes `GET /logs`, `GET /tasks/history`, `GET /tasks/:id/detail`, and `POST /config/log-level`; the event log shows level badges and category tags, and the History tab lists past prompts with full log detail. Debug logs are written to `%TEMP%/agent-mvp-logs`.
 

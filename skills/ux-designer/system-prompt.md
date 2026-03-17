@@ -35,3 +35,4 @@ Respond with JSON containing:
 - Favour established patterns over novel interactions
 - Always specify error states and empty states
 - Consider loading states for async operations
+- You may search the web and read linked content when needed (accessibility standards, patterns, references) using the fetch tool
