@@ -246,7 +246,7 @@ Click the microphone button to speak your prompt. In Chrome/Edge, the browser's 
 The pipeline now supports human-in-the-loop checkpoints:
 
 - **Design approval** -- after the design agent produces `DESIGN.md`, BigBoss summarises the design and presents it for review. You can approve, request changes (with written feedback that gets fed back to the designer), or reject.
-- **Coding feedback** -- if the coding agent writes `CODING_NOTES.md` (flagging design issues encountered during implementation), BigBoss summarises the feedback and lets you choose to continue to testing or re-run the design stage with the coding notes as context.
+- **Coding feedback** -- if the coding agent writes `CODING_NOTES.md` (flagging design issues encountered during implementation), BigBoss summarises the feedback. With **Require design approval** on, you choose to continue to testing or re-run the design stage. With it off, the pipeline automatically loops back to design when the notes contain substantive Issues or Deviations (not Suggestions only), up to a configurable iteration cap; when the cap is reached, unaddressed feedback is recorded and shown as "Feedback not implemented" in the UI.
 - **Pipeline cancellation** -- click Stop at any time to abort the running agent and cancel the pipeline.
 
 #### Context passing
