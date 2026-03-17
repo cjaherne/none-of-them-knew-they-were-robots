@@ -39,6 +39,8 @@ const PARALLEL_DESIGNERS: StageDefinition[] = [
   { name: "visual-design", agent: "graphics-designer", category: "design" },
 ];
 
+const RELEASE_STAGE: StageDefinition = { name: "release", agent: "release", category: "release" };
+
 function resolveSkillsRoot(): string {
   return (
     process.env.SKILLS_ROOT ||
@@ -434,7 +436,7 @@ async function bigBossSummarize(
 async function readDesignPreview(workDir: string): Promise<string> {
   try {
     const content = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
-    return content.slice(0, 600);
+    return content.slice(0, 8000);
   } catch {
     return "";
   }
@@ -520,6 +522,8 @@ export async function runPipeline(task: MvpTask): Promise<void> {
     log.info(`Pipeline stages: ${stages.map((s) => s.name).join(" -> ")}`, { mode: task.pipelineMode }, "flow");
   }
 
+  stages = [...stages, RELEASE_STAGE];
+
   const initialStages: StageStatus[] = stages.map((s) => ({
     name: s.name,
     agent: s.agent,
@@ -527,7 +531,11 @@ export async function runPipeline(task: MvpTask): Promise<void> {
   }));
   taskStore.setStages(task.id, initialStages);
 
-  const stageGroups = planned?.stageGroups || groupStages(stages, false);
+  let stageGroups = planned?.stageGroups || groupStages(stages, false);
+  const hasRelease = stageGroups.some((g) => g.stageDefs.some((s) => s.name === "release"));
+  if (!hasRelease) {
+    stageGroups = [...stageGroups, { name: "release", parallel: false, agents: [{ type: "release" }], stageDefs: [RELEASE_STAGE] }];
+  }
   const isTrivial = complexity === "trivial";
   let designLoops = 0;
   let designFeedback: string | undefined;
@@ -572,7 +580,14 @@ export async function runPipeline(task: MvpTask): Promise<void> {
         };
 
         return runAgent(config, workDir, (event) => {
-          taskStore.updateStage(task.id, stage.name, { status: "running" });
+          if (event.type === "progress") {
+            taskStore.emitStageProgress(task.id, stage.name, {
+              elapsedSeconds: event.elapsedSeconds,
+              filesEdited: event.filesEdited,
+            });
+          } else {
+            taskStore.updateStage(task.id, stage.name, { status: "running" });
+          }
         }, signal);
       });
 
@@ -654,6 +669,28 @@ export async function runPipeline(task: MvpTask): Promise<void> {
     } else {
       // --- Sequential stage execution (single stage in group) ---
       const stage = group.stageDefs[0];
+
+      if (stage.category === "release" && !task.repo) {
+        log.info("Release stage skipped (no repo configured)", undefined, "status");
+        taskStore.emit_log(task.id, "Release skipped (no repo configured)");
+        taskStore.updateStage(task.id, stage.name, {
+          status: "succeeded",
+          completedAt: new Date().toISOString(),
+          notes: "Skipped (no repo configured)",
+        });
+        upstreamResults.push({
+          agent: "release",
+          success: true,
+          output: "",
+          parsed: { assistantMessage: "", filesWritten: [], shellCommands: [], errors: [], tokenUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 } },
+          filesModified: [],
+          errors: [],
+          durationMs: 0,
+        });
+        groupIndex++;
+        continue;
+      }
+
       log.info(`Stage ${stage.name} started (agent: ${stage.agent})`, { stage: stage.name, agent: stage.agent }, "status");
 
       taskStore.updateStage(task.id, stage.name, {
@@ -668,6 +705,9 @@ export async function runPipeline(task: MvpTask): Promise<void> {
         }
 
         const briefKey = stage.name === "validation" ? "testing" : stage.name;
+        const releaseBrief = stage.category === "release"
+          ? `Target base branch for PR: ${task.baseBranch}. Use this for \`git log ${task.baseBranch}..HEAD\` and \`gh pr create --base ${task.baseBranch}\`.`
+          : null;
         const config: AgentRunConfig = {
           ...baseConfig,
           prompt: stagePrompt,
@@ -678,13 +718,20 @@ export async function runPipeline(task: MvpTask): Promise<void> {
           upstreamResults: upstreamResults.length > 0
             ? [...upstreamResults]
             : undefined,
-          agentBrief: agentBriefs[briefKey] || agentBriefs[stage.agent] || null,
+          agentBrief: releaseBrief ?? agentBriefs[briefKey] ?? agentBriefs[stage.agent] ?? null,
         };
 
         const result = await runAgent(config, workDir, (event) => {
           const current = taskStore.getTask(task.id);
           if (!current) return;
-          taskStore.updateStage(task.id, stage.name, { status: "running" });
+          if (event.type === "progress") {
+            taskStore.emitStageProgress(task.id, stage.name, {
+              elapsedSeconds: event.elapsedSeconds,
+              filesEdited: event.filesEdited,
+            });
+          } else {
+            taskStore.updateStage(task.id, stage.name, { status: "running" });
+          }
         }, signal);
 
         if (signal.aborted) {

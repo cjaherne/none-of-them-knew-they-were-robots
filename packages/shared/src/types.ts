@@ -189,7 +189,7 @@ export interface VoiceCommandResponse {
 export interface TaskStreamEvent {
   taskId: string;
   agent?: string;
-  type: "status_change" | "log" | "approval_required" | "result";
+  type: "status_change" | "log" | "approval_required" | "result" | "stage_progress";
   message: string;
   data?: Record<string, unknown>;
   timestamp: string;

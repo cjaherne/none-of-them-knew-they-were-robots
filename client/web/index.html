@@ -465,11 +465,12 @@
       border: 1px solid var(--border);
       border-radius: 4px;
       padding: 0.5rem;
-      max-height: 200px;
-      overflow-y: auto;
+      max-height: min(50vh, 480px);
+      overflow-y: scroll;
       white-space: pre-wrap;
       word-break: break-word;
       font-family: var(--mono);
+      display: block;
     }
 
     .approval-feedback-input textarea {
@@ -828,6 +829,94 @@
 
     @keyframes spin {
       to { transform: rotate(360deg); }
+    }
+
+    /* --- Stage blocks (nested collapsible logs) --- */
+    .stage-blocks {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .stage-block {
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+      background: var(--surface-2);
+    }
+
+    .stage-block-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 0.625rem;
+      font-size: 0.75rem;
+      cursor: pointer;
+      user-select: none;
+      background: var(--surface);
+      border-bottom: 1px solid transparent;
+      transition: background 0.15s, border-color 0.15s;
+    }
+
+    .stage-block-header:hover {
+      background: var(--surface-2);
+    }
+
+    .stage-block.expanded .stage-block-header {
+      border-bottom-color: var(--border);
+    }
+
+    .stage-block-toggle {
+      font-family: var(--mono);
+      font-size: 0.5625rem;
+      color: var(--text-dim);
+      width: 1rem;
+      transition: transform 0.15s;
+    }
+
+    .stage-block.collapsed .stage-block-toggle {
+      transform: rotate(-90deg);
+    }
+
+    .stage-block-name {
+      font-weight: 500;
+      color: var(--text-bright);
+    }
+
+    .stage-block-summary {
+      color: var(--text-muted);
+      font-size: 0.6875rem;
+      margin-left: 0.25rem;
+    }
+
+    .stage-block-status {
+      margin-left: auto;
+      font-size: 0.5625rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .stage-block-status.pending { color: var(--text-dim); }
+    .stage-block-status.running { color: var(--cyan); }
+    .stage-block-status.succeeded { color: var(--success); }
+    .stage-block-status.failed { color: var(--danger); }
+
+    .stage-block-body {
+      padding: 0.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .stage-block-body .log-entry {
+      font-size: 0.6875rem;
+      padding: 0.3rem 0.5rem;
+    }
+
+    .stage-block.collapsed .stage-block-body {
+      display: none;
     }
 
     .log-section-divider {
@@ -1243,7 +1332,7 @@
         </div>
         <p id="approvalSummary" class="approval-summary-text"></p>
         <details class="approval-preview" id="approvalPreviewBlock">
-          <summary>View details</summary>
+          <summary>View details (DESIGN.md — scroll to read full document)</summary>
           <pre id="approvalPreview"></pre>
         </details>
         <div class="approval-feedback-input" id="revisionInputBlock" style="display: none;">
@@ -1268,6 +1357,8 @@
       <!-- Event log (Live tab) -->
       <div class="task-log" id="taskLog">
         <h2>Event Log</h2>
+        <div class="log-entries-top" id="logEntriesTop"></div>
+        <div class="stage-blocks" id="stageBlocks"></div>
       </div>
 
       <!-- History view (History tab) -->

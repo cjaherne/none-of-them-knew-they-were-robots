@@ -58,6 +58,16 @@ export class ApiStack extends cdk.Stack {
       bundling: { externalModules: ["@aws-sdk/*"] },
     });
 
+    const taskDetailFn = new lambdaNode.NodejsFunction(this, "TaskDetailFn", {
+      entry: path.join(__dirname, "../../packages/api/src/task-detail.ts"),
+      handler: "handler",
+      runtime: lambda.Runtime.NODEJS_20_X,
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(10),
+      environment: commonEnv,
+      bundling: { externalModules: ["@aws-sdk/*"] },
+    });
+
     const approvalsFn = new lambdaNode.NodejsFunction(this, "ApprovalsFn", {
       entry: path.join(__dirname, "../../packages/api/src/approvals.ts"),
       handler: "handler",
@@ -124,6 +134,8 @@ export class ApiStack extends cdk.Stack {
 
     props.tasksTable.grantReadWriteData(voiceCommandFn);
     props.tasksTable.grantReadData(tasksFn);
+    props.tasksTable.grantReadData(taskDetailFn);
+    props.logsTable.grantReadData(taskDetailFn);
     props.approvalsTable.grantReadWriteData(approvalsFn);
     props.taskQueue.grantSendMessages(voiceCommandFn);
     props.audioBucket.grantReadWrite(voiceCommandFn);
@@ -148,6 +160,12 @@ export class ApiStack extends cdk.Stack {
     taskByIdResource.addMethod(
       "GET",
       new apigateway.LambdaIntegration(tasksFn)
+    );
+
+    const taskDetailResource = taskByIdResource.addResource("detail");
+    taskDetailResource.addMethod(
+      "GET",
+      new apigateway.LambdaIntegration(taskDetailFn)
     );
 
     const approveResource = taskByIdResource.addResource("approve");
