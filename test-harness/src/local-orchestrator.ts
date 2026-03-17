@@ -14,6 +14,7 @@ import {
   AgentRunResult,
 } from "./local-agent-runner";
 import { loadOrBuildCache, getCacheBrief } from "./context-cache";
+import { parseCodingNotes, shouldLoopOnFeedback } from "./feedback-criteria";
 
 interface StageDefinition {
   name: string;
@@ -539,6 +540,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
   const isTrivial = complexity === "trivial";
   let designLoops = 0;
   let designFeedback: string | undefined;
+  let feedbackFingerprint: string | undefined;
   let groupIndex = 0;
 
   while (groupIndex < stageGroups.length) {
@@ -828,36 +830,80 @@ export async function runPipeline(task: MvpTask): Promise<void> {
           }
 
           // --- Coding: feedback loop ---
-          if (stage.category === "coding" && task.requireDesignApproval) {
+          if (stage.category === "coding") {
             const notes = await readCodingNotes(workDir);
-            if (notes && designLoops < MAX_DESIGN_LOOPS) {
-              const feedbackSummary = await bigBossSummarize(workDir, "CODING_NOTES.md", "feedback");
-              log.info("Presenting coding feedback for review", undefined, "flow");
+            if (notes) {
+              const atCap = designLoops >= MAX_DESIGN_LOOPS;
 
-              const feedbackApproval: ApprovalResponse = await taskStore.requestApproval(
-                task.id, feedbackSummary,
-                { approvalType: "feedback", feedbackPreview: notes.slice(0, 600) },
-              );
+              if (task.requireDesignApproval) {
+                // User-in-the-loop: present feedback for approval
+                if (!atCap) {
+                  const feedbackSummary = await bigBossSummarize(workDir, "CODING_NOTES.md", "feedback");
+                  log.info("Presenting coding feedback for review", undefined, "flow");
 
-              if (signal.aborted) { taskStore.cleanupAbort(task.id); return; }
+                  const feedbackApproval: ApprovalResponse = await taskStore.requestApproval(
+                    task.id, feedbackSummary,
+                    { approvalType: "feedback", feedbackPreview: notes.slice(0, 600) },
+                  );
 
-              if (feedbackApproval.action === "redesign") {
-                designLoops++;
-                designFeedback = notes;
-                log.info(`Re-running design with coding feedback (loop ${designLoops})`, undefined, "flow");
-                taskStore.emit_log(task.id, `Re-running design with coding feedback (loop ${designLoops})`);
+                  if (signal.aborted) { taskStore.cleanupAbort(task.id); return; }
 
-                const designGroupIdx = stageGroups.findIndex((g) => g.stageDefs.some((s) => s.category === "design"));
-                if (designGroupIdx >= 0) {
-                  for (const s of stageGroups[designGroupIdx].stageDefs) {
-                    taskStore.updateStage(task.id, s.name, { status: "pending" as const });
+                  if (feedbackApproval.action === "redesign") {
+                    designLoops++;
+                    designFeedback = notes;
+                    feedbackFingerprint = parseCodingNotes(notes).mustAddressContent;
+                    log.info(`Re-running design with coding feedback (loop ${designLoops})`, undefined, "flow");
+                    taskStore.emit_log(task.id, `Re-running design with coding feedback (loop ${designLoops})`);
+
+                    const designGroupIdx = stageGroups.findIndex((g) => g.stageDefs.some((s) => s.category === "design"));
+                    if (designGroupIdx >= 0) {
+                      for (const s of stageGroups[designGroupIdx].stageDefs) {
+                        taskStore.updateStage(task.id, s.name, { status: "pending" as const });
+                      }
+                      taskStore.updateStage(task.id, stage.name, { status: "pending" as const });
+                      groupIndex = designGroupIdx;
+                      continue;
+                    }
                   }
-                  taskStore.updateStage(task.id, stage.name, { status: "pending" as const });
-                  groupIndex = designGroupIdx;
-                  continue;
+                  log.info("Continuing to next stage (feedback acknowledged)", undefined, "flow");
+                } else {
+                  taskStore.updateStage(task.id, stage.name, {
+                    feedbackLimitReached: true,
+                    unaddressedFeedback: notes,
+                  });
+                  log.info("Feedback loop limit reached; unaddressed feedback recorded", undefined, "flow");
+                  taskStore.emit_log(task.id, "Feedback loop limit reached. Unaddressed coding feedback recorded in stage notes.");
+                }
+              } else {
+                // No approval: automatic criteria-based loop decision
+                const parsed = parseCodingNotes(notes);
+                const criteriaSayLoop = shouldLoopOnFeedback(parsed, feedbackFingerprint);
+
+                if (criteriaSayLoop && !atCap) {
+                  designLoops++;
+                  designFeedback = notes;
+                  feedbackFingerprint = parsed.mustAddressContent;
+                  log.info(`Auto loop: re-running design with coding feedback (loop ${designLoops})`, undefined, "flow");
+                  taskStore.emit_log(task.id, `Re-running design with coding feedback (loop ${designLoops})`);
+
+                  const designGroupIdx = stageGroups.findIndex((g) => g.stageDefs.some((s) => s.category === "design"));
+                  if (designGroupIdx >= 0) {
+                    for (const s of stageGroups[designGroupIdx].stageDefs) {
+                      taskStore.updateStage(task.id, s.name, { status: "pending" as const });
+                    }
+                    taskStore.updateStage(task.id, stage.name, { status: "pending" as const });
+                    groupIndex = designGroupIdx;
+                    continue;
+                  }
+                } else if (atCap && parsed.mustAddressContent.length >= 50) {
+                  taskStore.updateStage(task.id, stage.name, {
+                    feedbackLimitReached: true,
+                    unaddressedFeedback: notes,
+                  });
+                  log.info("Feedback loop limit reached; unaddressed feedback recorded", undefined, "flow");
+                  taskStore.emit_log(task.id, "Feedback loop limit reached. Unaddressed coding feedback recorded in stage notes and CODING_NOTES.md.");
                 }
               }
-              log.info("Continuing to next stage (feedback acknowledged)", undefined, "flow");
             }
           }
         } else {

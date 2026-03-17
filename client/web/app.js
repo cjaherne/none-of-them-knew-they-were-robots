@@ -563,11 +563,13 @@ function renderAllStageDetails(stages) {
   let totalCost = 0;
   let hasNotes = false;
 
+  let hasUnaddressedFeedback = false;
   for (const s of stages) {
     if (s.filesModified) s.filesModified.forEach((f) => totalFiles.add(f));
     if (s.durationMs) totalDuration += s.durationMs;
     if (s.estimatedCost) totalCost += s.estimatedCost;
     if (s.notes) hasNotes = true;
+    if (s.feedbackLimitReached) hasUnaddressedFeedback = true;
   }
 
   html += `<div class="pipeline-summary">`;
@@ -581,6 +583,9 @@ function renderAllStageDetails(stages) {
   }
   if (hasNotes) {
     html += `<span class="summary-stat" style="color: var(--warning)">feedback logged</span>`;
+  }
+  if (hasUnaddressedFeedback) {
+    html += `<span class="summary-stat" style="color: var(--warning)">feedback not implemented</span>`;
   }
   html += `</div>`;
 
@@ -616,6 +621,20 @@ function renderAllStageDetails(stages) {
     html += `<span class="feedback-arrow">coding → design</span>`;
     html += `</div>`;
     html += `<div class="feedback-body">${escapeHtml(notesStage.notes)}</div>`;
+    html += `</div>`;
+  }
+
+  const unaddressedStage = stages.find((s) => s.feedbackLimitReached && s.unaddressedFeedback);
+  if (unaddressedStage) {
+    const preview = unaddressedStage.unaddressedFeedback.length > 600
+      ? unaddressedStage.unaddressedFeedback.slice(0, 600) + "..."
+      : unaddressedStage.unaddressedFeedback;
+    html += `<div class="feedback-card feedback-not-implemented">`;
+    html += `<div class="feedback-header">`;
+    html += `<span>Feedback not implemented</span>`;
+    html += `<span class="feedback-arrow">loop limit reached</span>`;
+    html += `</div>`;
+    html += `<div class="feedback-body">${escapeHtml(preview)}</div>`;
     html += `</div>`;
   }
 

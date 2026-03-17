@@ -16,6 +16,10 @@ export interface StageStatus {
   notes?: string;
   tokenUsage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number };
   estimatedCost?: number;
+  /** True when feedback loop limit reached but CODING_NOTES.md had unaddressed feedback */
+  feedbackLimitReached?: boolean;
+  /** Content of unaddressed feedback when feedbackLimitReached is true */
+  unaddressedFeedback?: string;
 }
 
 export type PipelineMode = "auto" | "full" | "code-test" | "code-only";
