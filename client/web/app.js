@@ -503,7 +503,7 @@ function showPipeline(taskId) {
   }
 
   approvalBanner.classList.remove("visible");
-  finalizeRunningIndicator();
+  finalizeAllRunningIndicators();
 }
 
 function buildStageElements(stages) {
@@ -796,7 +796,11 @@ function handleStreamEvent(data) {
       }
 
       if (!stageMatch && msg) {
-        addLogEntry(msg, "info", getAnyRunningStage());
+        const isOverseer = data.data?.overseer === true;
+        const logType = isOverseer
+          ? (data.data?.result === "ok" ? "success" : data.data?.result === "gaps" || data.data?.result === "drift" ? "pending" : "info")
+          : "info";
+        addLogEntry(msg, logType, getAnyRunningStage(), isOverseer ? { overseer: true, phase: data.data?.phase, status: data.data?.status, result: data.data?.result } : undefined);
       }
       return;
     }
@@ -938,11 +942,18 @@ function finalizeAllRunningIndicators() {
 }
 
 // --- Log entries ---
-function addLogEntry(message, type = "pending", stageName = null) {
+function addLogEntry(message, type = "pending", stageName = null, opts = null) {
   const entry = document.createElement("div");
   entry.className = `log-entry ${type}`;
+  if (opts?.overseer) {
+    entry.classList.add("overseer");
+    entry.dataset.overseerPhase = opts.phase || "";
+    entry.dataset.overseerStatus = opts.status || "";
+    if (opts.result) entry.dataset.overseerResult = opts.result;
+  }
   const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  entry.innerHTML = `<span class="time">${time}</span><span class="log-msg">${escapeHtml(message)}</span>`;
+  const overseerLabel = opts?.overseer ? "<span class=\"overseer-badge\">BigBoss</span> " : "";
+  entry.innerHTML = `<span class="time">${time}</span><span class="log-msg">${overseerLabel}${escapeHtml(message)}</span>`;
   const target = (stageName && getStageBlockBody(stageName)) ? getStageBlockBody(stageName) : (logEntriesTop || taskLog);
   target.appendChild(entry);
   entry.scrollIntoView({ behavior: "smooth" });

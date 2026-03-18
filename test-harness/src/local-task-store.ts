@@ -202,6 +202,28 @@ class TaskStore {
     });
   }
 
+  /** Emit a log event with optional overseer metadata for UI visualization. */
+  emit_overseer_log(
+    taskId: string,
+    message: string,
+    meta: { phase: "design-review" | "code-review"; status: "running" | "done"; result?: "ok" | "gaps" | "drift" },
+  ): void {
+    const task = this.tasks.get(taskId);
+    this.emit(taskId, {
+      taskId,
+      type: "log",
+      message,
+      data: {
+        overseer: true,
+        phase: meta.phase,
+        status: meta.status,
+        result: meta.result,
+        stages: task?.stages,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   emitStageProgress(
     taskId: string,
     stageName: string,

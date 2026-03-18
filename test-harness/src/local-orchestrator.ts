@@ -1135,17 +1135,33 @@ export async function runPipeline(task: MvpTask): Promise<void> {
 
       // Merge parallel design outputs if this was a design group
       if (group.stageDefs[0]?.category === "design" && group.stageDefs.length > 1) {
+        taskStore.emit_log(task.id, `Merging ${group.stageDefs.length} design documents…`);
         await mergeDesignOutputs(workDir, parallelResults, task.prompt, skillsRoot, task.id, signal);
         taskStore.emit_log(task.id, `Merged ${group.stageDefs.length} design documents`);
 
         // Overseer: post-design review for requirements fit
+        taskStore.emit_overseer_log(task.id, "BigBoss (Overseer): reviewing design against requirements…", {
+          phase: "design-review",
+          status: "running",
+        });
         const designReview = await overseerPostDesignReview(workDir, task.prompt, skillsRoot, task.id, signal);
+        taskStore.emit_overseer_log(
+          task.id,
+          designReview?.fit === "ok"
+            ? "BigBoss (Overseer): design fits requirements."
+            : designReview?.fit === "gaps"
+              ? "BigBoss (Overseer): gaps found; re-running design."
+              : "BigBoss (Overseer): design review complete.",
+          { phase: "design-review", status: "done", result: designReview?.fit === "ok" ? "ok" : designReview?.fit === "gaps" ? "gaps" : undefined },
+        );
         if (designReview?.fit === "gaps" && designReviewIterations < MAX_OVERSEER_DESIGN_ITERATIONS) {
           designReviewIterations++;
           designFeedback = designReview.suggestedSubTask?.prompt
             ? `Overseer found gaps; address these in your design:\n${designReview.suggestedSubTask.prompt}`
             : `Overseer found gaps: ${(designReview.gaps || []).join("; ")}`;
-          taskStore.emit_log(task.id, `Overseer design review: gaps found (iteration ${designReviewIterations}). Re-running design.`);
+          const gapList = (designReview.gaps || []).slice(0, 5).join("; ");
+          const gapDetail = gapList ? ` Gaps: ${gapList}${(designReview.gaps?.length ?? 0) > 5 ? "…" : ""}` : "";
+          taskStore.emit_log(task.id, `Overseer design review: gaps found (iteration ${designReviewIterations}). Re-running design.${gapDetail}`);
           log.info("Overseer design review: re-running design for gaps", { gaps: designReview.gaps }, "flow");
           upstreamResults.splice(upstreamResults.length - group.stageDefs.length, group.stageDefs.length);
           for (const s of group.stageDefs) {
@@ -1440,7 +1456,20 @@ export async function runPipeline(task: MvpTask): Promise<void> {
 
           // --- Overseer: post-code review ---
           if (stage.category === "coding" && result.success && codeReviewIterations < MAX_OVERSEER_CODE_ITERATIONS) {
+            taskStore.emit_overseer_log(task.id, "BigBoss (Overseer): reviewing code against design and requirements…", {
+              phase: "code-review",
+              status: "running",
+            });
             const codeReview = await overseerPostCodeReview(workDir, task.prompt, skillsRoot, task.id, signal);
+            taskStore.emit_overseer_log(
+              task.id,
+              codeReview?.fit === "ok"
+                ? "BigBoss (Overseer): implementation fits design and requirements."
+                : codeReview?.fit === "drift"
+                  ? "BigBoss (Overseer): drift found; running fix-up pass."
+                  : "BigBoss (Overseer): code review complete.",
+              { phase: "code-review", status: "done", result: codeReview?.fit === "ok" ? "ok" : codeReview?.fit === "drift" ? "drift" : undefined },
+            );
             if (codeReview?.fit === "drift" && codeReview.suggestedSubTask?.prompt) {
               codeReviewIterations++;
               taskStore.emit_log(task.id, `Overseer code review: drift found. Running fix-up pass (${codeReviewIterations}).`);

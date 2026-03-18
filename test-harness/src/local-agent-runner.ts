@@ -1241,7 +1241,20 @@ export async function runAgent(
 
   const parsed = parseAgentOutput(cursorResult.stdout);
 
-  const filesModified = collectModifiedFiles(workDir);
+  let filesModified = collectModifiedFiles(workDir);
+  // Parallel design agents write to .pipeline/<agentType>-design.md; git may not report it (e.g. no repo, or .pipeline ignored). Count it if present.
+  if (config.parallelDesign && config.category === "design") {
+    const designPath = path.join(workDir, ".pipeline", `${config.agentType}-design.md`);
+    try {
+      await fs.access(designPath);
+      const relPath = `.pipeline/${config.agentType}-design.md`;
+      if (!filesModified.includes(relPath)) {
+        filesModified = [...filesModified, relPath];
+      }
+    } catch {
+      // file not present; keep filesModified as-is
+    }
+  }
   onEvent?.({
     type: "log",
     content: `Files modified: ${filesModified.length}${wasTimeout ? " (agent timed out but produced files)" : ""}`,

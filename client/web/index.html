@@ -812,6 +812,20 @@
     .log-entry.pending { border-left: 2px solid var(--accent); }
     .log-entry.info { border-left: 2px solid var(--cyan); color: var(--text-muted); }
 
+    .log-entry.overseer {
+      border-left: 2px solid var(--accent);
+      background: var(--surface-2);
+    }
+    .log-entry.overseer .overseer-badge {
+      display: inline-block;
+      font-size: 0.5625rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--accent);
+      margin-right: 0.375rem;
+    }
+
     .log-entry.running-indicator {
       border-left: 2px solid var(--cyan);
       color: var(--text-muted);
