@@ -34,6 +34,19 @@ Respond with JSON containing:
 - `animations`: Transition and animation specs
 - `responsiveBreakpoints`: Breakpoint values and adaptation notes
 
+## Game Visual Design
+
+When the task involves a video game, Lua, or LÖVE2D:
+
+- Sprite specifications: dimensions (e.g. 32x32, 64x64), tile sizes for tilemaps, sprite sheet layout (rows x cols)
+- Color palettes: limited palette (8-16 colours) with high contrast for gameplay readability; specify exact hex values
+- Animation frame specs: per-state frame counts and FPS (e.g. idle: 4 frames @ 8fps, walk: 6 frames @ 12fps, attack: 3 frames @ 16fps)
+- UI element sizing: font sizes in pixels, health/score bar dimensions, button sizes for menu screens
+- Asset folder structure: `assets/sprites/`, `assets/audio/`, `assets/fonts/`, `assets/tilesets/` with naming conventions
+- Art direction brief: visual style (pixel art, flat vector, hand-drawn), mood, reference influences
+
+Output a **game art brief** instead of CSS tokens: palette hex values, sprite dimensions, animation frame counts, font choices with pixel sizes, and asset naming conventions.
+
 ## Constraints
 
 - Use web-safe or Google Fonts only

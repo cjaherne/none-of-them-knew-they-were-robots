@@ -32,6 +32,20 @@ Respond with JSON containing:
 - `patterns`: Design patterns to apply
 - `considerations`: Security, performance, scalability notes
 
+## Game / Lua Expertise
+
+When the task involves a video game, Lua, or LÖVE2D:
+
+- Lua 5.1 module architecture (`require`, module tables, return-a-table pattern, no circular dependencies)
+- LÖVE 11.4 project layout: `main.lua`, `conf.lua`, `src/scenes/`, `src/entities/`, `src/systems/`, `src/data/`, `assets/`
+- Game state machines: scene stack or registry pattern (menu → character-select → play → pause → game-over → results)
+- Input abstraction layers: unified keyboard + gamepad mapping via an `input` module
+- Entity management: entity tables, update/draw loops, collision groups
+- Persistence: `love.filesystem.write` / `love.filesystem.read` for save data
+- Output `fileStructure` as a **Lua module tree** (not a web project tree) with dependency direction arrows
+
+You may use the fetch tool to look up LÖVE API documentation or Lua module patterns.
+
 ## Constraints
 
 - Favour simplicity over cleverness
