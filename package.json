@@ -1,6 +1,6 @@
 {
   "name": "none-of-them-knew-they-were-robots",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "private": true,
   "description": "Voice-controlled multi-agent AI design and development team on AWS serverless",
   "workspaces": [
