@@ -766,9 +766,15 @@ async function tryRunProject(workDir: string): Promise<ExecVerifyResult | null> 
   let command: string | null = null;
 
   if (hasFile("main.lua") && hasFile("conf.lua")) {
-    command = "luac -p main.lua && for /r src %%f in (*.lua) do luac -p %%f";
-    if (process.platform !== "win32") {
-      command = "luac -p main.lua && find src -name '*.lua' -exec luac -p {} +";
+    const hasSrc = hasFile("src");
+    if (process.platform === "win32") {
+      command = hasSrc
+        ? "luac -p main.lua && for /r src %f in (*.lua) do luac -p %f"
+        : "luac -p main.lua";
+    } else {
+      command = hasSrc
+        ? "luac -p main.lua && find src -name '*.lua' -exec luac -p {} +"
+        : "luac -p main.lua";
     }
     try {
       cpExecSync("luac -v", { cwd: workDir, stdio: "pipe" });
@@ -912,11 +918,16 @@ ${originalTask}`;
     const result = await runAgent(config, workDir, undefined, signal);
     if (result.success) {
       try {
-        await fs.access(path.join(workDir, "DESIGN.md"));
+        const designPath = path.join(workDir, "DESIGN.md");
+        let content = await fs.readFile(designPath, "utf-8");
+        if (!content.startsWith("## Original task")) {
+          content = prependOriginalTaskToDesign(workDir, content, originalTask);
+          await fs.writeFile(designPath, content, "utf-8");
+        }
         log.info("Agent-based design merge succeeded", undefined, "flow");
         return true;
       } catch {
-        log.warn("Agent merge ran but DESIGN.md not found", undefined, "flow");
+        log.warn("Agent merge ran but DESIGN.md not found or unreadable", undefined, "flow");
         return false;
       }
     }
@@ -1255,7 +1266,9 @@ export async function runPipeline(task: MvpTask): Promise<void> {
 
         let result: AgentRunResult;
 
+        let usedSubTasks = false;
         if (subTasks && subTasks.length > 1) {
+          usedSubTasks = true;
           // R2: Run sub-tasks sequentially, each building on previous output
           let lastResult: AgentRunResult | null = null;
           for (let i = 0; i < subTasks.length; i++) {
@@ -1267,6 +1280,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
               workspaceReady: true,
               subTaskIndex: i,
               subTaskTotal: subTasks.length,
+              upstreamResults: [...upstreamResults],
             };
             lastResult = await runAgent(subConfig, workDir, progressCallback, signal);
             upstreamResults.push(lastResult);
@@ -1288,7 +1302,9 @@ export async function runPipeline(task: MvpTask): Promise<void> {
           return;
         }
 
-        upstreamResults.push(result);
+        if (!usedSubTasks) {
+          upstreamResults.push(result);
+        }
 
         if (result.success) {
           const stageUpdate: Partial<StageStatus> = {
@@ -1366,6 +1382,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
                 category: "coding",
                 workspaceReady: true,
                 trivial: true,
+                complexity,
                 prompt: `${task.prompt}\n\nIMPORTANT: The previous coding pass produced lint/build errors. Fix them.\n\nCommand: ${lint.command}\nErrors:\n${lint.output}`,
                 upstreamResults: [...upstreamResults],
               };

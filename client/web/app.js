@@ -642,10 +642,8 @@ function renderAllStageDetails(stages) {
 }
 
 // --- Streaming ---
-let activeRunningEntry = null;
-let activeRunningStage = null;
-let activeRunningStart = null;
-let activeRunningFilesEdited = 0;
+// Track running indicators per stage (supports parallel stages)
+const runningIndicators = new Map(); // stageName -> { entry, start, filesEdited }
 let runningIndicatorInterval = null;
 const stageBlockMap = {};
 
@@ -714,10 +712,7 @@ function connectStream(taskId) {
     currentStreamHandle.close();
   }
 
-  activeRunningEntry = null;
-  activeRunningStage = null;
-  activeRunningStart = null;
-  activeRunningFilesEdited = 0;
+  runningIndicators.clear();
   if (runningIndicatorInterval) {
     clearInterval(runningIndicatorInterval);
     runningIndicatorInterval = null;
@@ -729,12 +724,17 @@ function connectStream(taskId) {
   currentStreamHandle = adapter.streamTask(taskId, handleStreamEvent);
 }
 
+function getAnyRunningStage() {
+  if (runningIndicators.size === 0) return null;
+  return runningIndicators.keys().next().value;
+}
+
 function handleStreamEvent(data) {
   try {
-    if (handleLogEntryEvent(data, activeRunningStage)) return;
+    if (handleLogEntryEvent(data, getAnyRunningStage())) return;
 
     if (data.type === "error") {
-      finalizeRunningIndicator();
+      finalizeAllRunningIndicators();
       addLogEntry(data.message || "Connection lost", "error", null);
       return;
     }
@@ -748,7 +748,7 @@ function handleStreamEvent(data) {
 
     if (data.type === "done") {
       if (currentStreamHandle) { currentStreamHandle.close(); currentStreamHandle = null; }
-      finalizeRunningIndicator();
+      finalizeAllRunningIndicators();
       return;
     }
 
@@ -775,40 +775,37 @@ function handleStreamEvent(data) {
         const [, stageName, stageStatus] = stageMatch;
 
         if (stageStatus === "running") {
-          if (activeRunningStage === stageName) {
-            updateRunningIndicator();
+          if (runningIndicators.has(stageName)) {
+            updateRunningIndicatorFor(stageName);
             return;
           }
-          finalizeRunningIndicator();
           ensureStageBlocks(data.data?.stages || []);
-          activeRunningStage = stageName;
-          activeRunningStart = Date.now();
-          activeRunningFilesEdited = 0;
           expandStageBlock(stageName);
-          activeRunningEntry = addRunningIndicator(stageName, data.agent || data.data?.agent);
+          const entry = addRunningIndicator(stageName, data.agent || data.data?.agent);
+          runningIndicators.set(stageName, { entry, start: Date.now(), filesEdited: 0 });
           if (!runningIndicatorInterval) {
-            runningIndicatorInterval = setInterval(updateRunningIndicator, 1000);
+            runningIndicatorInterval = setInterval(updateAllRunningIndicators, 1000);
           }
           return;
         }
 
         if (stageStatus === "succeeded" || stageStatus === "failed") {
-          finalizeRunningIndicator();
+          finalizeRunningIndicatorFor(stageName);
           return;
         }
       }
 
       if (!stageMatch && msg) {
-        addLogEntry(msg, "info", activeRunningStage);
+        addLogEntry(msg, "info", getAnyRunningStage());
       }
       return;
     }
 
     if (data.type === "result" && data.data?.stage) {
       const s = data.data.stage;
-      finalizeRunningIndicator();
-
       const stageName = s.name;
+      finalizeRunningIndicatorFor(stageName);
+
       if (s.status === "succeeded") {
         const files = s.filesModified?.length || 0;
         const dur = s.durationMs ? `${(s.durationMs / 1000).toFixed(0)}s` : "";
@@ -828,7 +825,7 @@ function handleStreamEvent(data) {
     }
 
     if (data.type === "status_change") {
-      finalizeRunningIndicator();
+      finalizeAllRunningIndicators();
 
       if (data.data?.status === "completed") {
         statusEl.textContent = "Pipeline completed";
@@ -864,20 +861,24 @@ function handleStreamEvent(data) {
     }
 
     if (data.type === "approval_required") {
-      finalizeRunningIndicator();
-      addLogEntry(`Awaiting approval: ${data.data?.approvalType || "review"}`, "pending", activeRunningStage);
+      finalizeAllRunningIndicators();
+      addLogEntry(`Awaiting approval: ${data.data?.approvalType || "review"}`, "pending", getAnyRunningStage());
       handleApprovalRequired(data);
       return;
     }
 
-    if (data.type === "stage_progress" && data.data && activeRunningEntry) {
-      const elapsed = data.data.elapsedSeconds;
-      const files = data.data.filesEdited ?? 0;
-      activeRunningFilesEdited = files;
-      const elSpan = activeRunningEntry.querySelector(".elapsed");
-      const filesSpan = activeRunningEntry.querySelector(".files-edited");
-      if (elSpan) elSpan.textContent = `${elapsed}s`;
-      if (filesSpan) filesSpan.textContent = `${files} file${files !== 1 ? "s" : ""}`;
+    if (data.type === "stage_progress" && data.data) {
+      const stageName = data.data.stageName;
+      const indicator = stageName ? runningIndicators.get(stageName) : null;
+      if (indicator) {
+        const elapsed = data.data.elapsedSeconds;
+        const files = data.data.filesEdited ?? 0;
+        indicator.filesEdited = files;
+        const elSpan = indicator.entry.querySelector(".elapsed");
+        const filesSpan = indicator.entry.querySelector(".files-edited");
+        if (elSpan) elSpan.textContent = `${elapsed}s`;
+        if (filesSpan) filesSpan.textContent = `${files} file${files !== 1 ? "s" : ""}`;
+      }
       return;
     }
   } catch {
@@ -897,26 +898,42 @@ function addRunningIndicator(stageName, agent) {
   return entry;
 }
 
-function updateRunningIndicator() {
-  if (!activeRunningEntry || !activeRunningStart) return;
-  const elapsed = Math.floor((Date.now() - activeRunningStart) / 1000);
-  const elSpan = activeRunningEntry.querySelector(".elapsed");
-  const filesSpan = activeRunningEntry.querySelector(".files-edited");
+function updateRunningIndicatorFor(stageName) {
+  const indicator = runningIndicators.get(stageName);
+  if (!indicator) return;
+  const elapsed = Math.floor((Date.now() - indicator.start) / 1000);
+  const elSpan = indicator.entry.querySelector(".elapsed");
+  const filesSpan = indicator.entry.querySelector(".files-edited");
   if (elSpan) elSpan.textContent = `${elapsed}s`;
-  if (filesSpan) filesSpan.textContent = `${activeRunningFilesEdited} file${activeRunningFilesEdited !== 1 ? "s" : ""}`;
+  if (filesSpan) filesSpan.textContent = `${indicator.filesEdited} file${indicator.filesEdited !== 1 ? "s" : ""}`;
 }
 
-function finalizeRunningIndicator() {
-  if (runningIndicatorInterval) {
+function updateAllRunningIndicators() {
+  for (const stageName of runningIndicators.keys()) {
+    updateRunningIndicatorFor(stageName);
+  }
+}
+
+function finalizeRunningIndicatorFor(stageName) {
+  const indicator = runningIndicators.get(stageName);
+  if (indicator) {
+    indicator.entry.remove();
+    runningIndicators.delete(stageName);
+  }
+  if (runningIndicators.size === 0 && runningIndicatorInterval) {
     clearInterval(runningIndicatorInterval);
     runningIndicatorInterval = null;
   }
-  if (activeRunningEntry) {
-    activeRunningEntry.remove();
-    activeRunningEntry = null;
-    activeRunningStage = null;
-    activeRunningStart = null;
-    activeRunningFilesEdited = 0;
+}
+
+function finalizeAllRunningIndicators() {
+  for (const [, indicator] of runningIndicators) {
+    indicator.entry.remove();
+  }
+  runningIndicators.clear();
+  if (runningIndicatorInterval) {
+    clearInterval(runningIndicatorInterval);
+    runningIndicatorInterval = null;
   }
 }
 
