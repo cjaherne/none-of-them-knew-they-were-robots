@@ -26,7 +26,7 @@ const CACHE_FILE = "context-cache.json";
 const BRIEF_FILE = "architecture-brief.md";
 
 const SKIP_DIRS = new Set([".cursor", ".pipeline", ".git", "node_modules", ".next", "dist", "build", "__pycache__", ".venv", "coverage"]);
-const SUMMARIZABLE_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rs", ".java", ".cs", ".html", ".css", ".scss", ".vue", ".svelte"]);
+const SUMMARIZABLE_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rs", ".java", ".cs", ".html", ".css", ".scss", ".vue", ".svelte", ".lua"]);
 
 function getCurrentSha(workDir: string): string {
   try {
@@ -65,6 +65,12 @@ function heuristicPurpose(filePath: string, firstLines: string): string {
   if (base === "tsconfig.json") return "TypeScript compiler configuration";
   if (base === "README.md") return "Project documentation";
   if (base === "DESIGN.md") return "Design document for the current feature";
+  if (base === "main.lua") return "LÖVE2D entry point (love.load, love.update, love.draw)";
+  if (base === "conf.lua") return "LÖVE2D window and project configuration";
+  if (base.endsWith("_spec.lua")) return `Busted test spec for ${base.replace(/_spec\.lua$/, ".lua")}`;
+  if (ext === ".lua" && dir.includes("scenes")) return `Game scene module (${base.replace(".lua", "")})`;
+  if (ext === ".lua" && dir.includes("entities")) return `Game entity module (${base.replace(".lua", "")})`;
+  if (ext === ".lua" && dir.includes("systems")) return `Game system module (${base.replace(".lua", "")})`;
   if (/\.test\.|\.spec\./.test(base)) return `Tests for ${base.replace(/\.(test|spec)\./, ".")}`;
   if (base.startsWith("index.")) return `Entry point for ${dir === "." ? "the project" : dir}`;
   if (/types?\./.test(base)) return "Type definitions and interfaces";

@@ -12,17 +12,19 @@ Agents are organised into categories that define their pipeline position:
 
 | Category | Agents | Role | MCP Tools |
 |----------|--------|------|-----------|
-| **Analysis** | BigBoss | Analyses tasks, plans agent pipelines; selects which design/coding agents run | Filesystem, GitHub |
-| **Design** | UX Designer | User flows, wireframes, accessibility (web and game UIs) | Filesystem, Playwright, Fetch |
-| **Design** | Core Code Designer | Architecture, data models, API contracts | Filesystem, GitHub |
-| **Design** | Graphics Designer | Color palettes, typography, CSS tokens, art direction | Filesystem, Fetch |
-| **Design** | Game Designer | Game mechanics, controls (keyboard + gamepad), game loop, Lua/LÖVE2D structure | Filesystem |
+| **Analysis / Overseer** | BigBoss | Plans agent pipelines; runs Overseer reviews (design fit + code drift) | Filesystem, GitHub, Fetch, Sequential Thinking |
+| **Design** | UX Designer | User flows, wireframes, accessibility, game UI (menus, HUD, split-screen) | Filesystem, Playwright, Fetch |
+| **Design** | Core Code Designer | Architecture, data models, API contracts, Lua module architecture | Filesystem, GitHub, Fetch |
+| **Design** | Graphics Designer | Color palettes, typography, CSS tokens, game art briefs (sprites, palettes, animations) | Filesystem, Fetch |
+| **Design** | Game Designer | Game mechanics, controls (keyboard + gamepad), game loop, Lua/LÖVE2D structure | Filesystem, Fetch, Sequential Thinking |
 | **Coding** | Coding Agent | Implements code (TypeScript, Python, web) from design specs | Filesystem, GitHub |
-| **Coding** | Lua Coding Agent | Implements Lua and LÖVE2D games from design specs | Filesystem, GitHub |
-| **Validation** | Testing Agent | Unit tests, integration tests, E2E | Filesystem, Playwright |
+| **Coding** | Lua Coding Agent | Implements Lua and LÖVE2D games from design specs | Filesystem, GitHub, Fetch, Sequential Thinking |
+| **Validation** | Testing Agent | Unit tests, integration tests, E2E, Lua/busted | Filesystem, Playwright, Fetch |
 | **Release** | Release Agent | Updates README, bumps SemVer in appropriate version file, commits, creates and pushes version tag, creates PR | Filesystem, GitHub |
 
-BigBoss uses a full stage/agent structure to select which designers and coders run (e.g. for Lua games: Game Designer + Lua Coding Agent; for web UI: UX + Graphics + Core Code Designer). UX and Graphics designers have Fetch MCP for web search and URL content (e.g. accessibility standards, color tools); requires `uvx` for the fetch server. New specialist agents can be added by creating a skill pack directory and a registry entry. The **Release** agent runs automatically at the end of every successful pipeline (when a repo is configured).
+BigBoss uses a full stage/agent structure to select which designers and coders run (e.g. for Lua games: Game Designer + Lua Coding Agent; for web UI: UX + Graphics + Core Code Designer). BigBoss also acts as an **Overseer**: after design merge it runs a full agent-based design review (reading DESIGN.md via filesystem MCP); after coding it runs a code review (reading actual source files). If gaps or drift are found, the Overseer triggers up to 2 re-runs of the affected stage with focused feedback. All agents with game responsibilities have Lua/LÖVE expertise in their prompts: Core Code Designer knows Lua module architecture, UX Designer handles game menus/HUD/controller-navigable UI, and Graphics Designer outputs game art briefs instead of CSS tokens.
+
+MCP capabilities: Fetch (web search via `uvx mcp-server-fetch`) is available to all design agents, Lua Coding, Testing, and BigBoss. Sequential Thinking is available to Game Designer, Lua Coding, and BigBoss for complex multi-step reasoning. New specialist agents can be added by creating a skill pack directory and a registry entry. The **Release** agent runs automatically at the end of every successful pipeline (when a repo is configured).
 
 ### Architecture
 
@@ -264,7 +266,9 @@ A **codebase summary cache** (`.pipeline/context-cache.json`) persists per-file 
 
 #### Parallel design stages
 
-For complex tasks, BigBoss can fan out design work to multiple specialist designers (UX, Core Code, Graphics, Game Designer) running in parallel. For full videogame or Lua/LÖVE tasks it selects game-designer, core-code-designer, ux-designer, and graphics-designer together. Each designer writes to `.pipeline/<agent>-design.md`; the orchestrator merges these into a unified `DESIGN.md` (via OpenAI merge or concatenation fallback) before the coding stage. The merged DESIGN.md is prefixed with the **Original task (source of truth)** so the coder always has the full user request; the Game Designer outputs a **requirements checklist** and the merge preserves it. An **Overseer** (BigBoss-style) runs after design merge and after coding to check fit: if gaps or drift are found, it triggers one re-run of design or code with focused feedback. The Test Harness counts each design output file so the UI shows one file per designer (e.g. "1 file(s)" for each).
+For complex tasks, BigBoss can fan out design work to multiple specialist designers (UX, Core Code, Graphics, Game Designer) running in parallel. For full videogame or Lua/LÖVE tasks it selects game-designer, core-code-designer, ux-designer, and graphics-designer together -- each now with Lua/game-aware prompts. Each designer writes to `.pipeline/<agent>-design.md`; the orchestrator merges these into a unified `DESIGN.md` (via configurable OpenAI model or concatenation fallback) before the coding stage. The merged DESIGN.md is prefixed with the **Original task (source of truth)** so the coder always has the full user request; the Game Designer outputs a **requirements checklist** (with sentence-by-sentence cross-referencing) and the merge preserves it.
+
+The **Overseer** (BigBoss as a full agent) runs after design merge and after coding to verify requirements fit. Unlike the previous API-only approach, the Overseer now uses the Cursor agent CLI with filesystem MCP to read actual source files (not just file trees), fetch MCP to verify LÖVE API usage, and sequential-thinking MCP for complex reasoning. If the agent review fails, it falls back to an OpenAI API call. The Overseer can trigger up to **2 re-runs** of design or code with focused feedback when gaps or drift are found. The Test Harness counts each design output file so the UI shows one file per designer (e.g. "1 file(s)" for each).
 
 Structured logging and task history are persisted in SQLite (`test-harness/data/logs.db`). The server exposes `GET /logs`, `GET /tasks/history`, `GET /tasks/:id/detail`, and `POST /config/log-level`; the event log shows level badges and category tags, and the History tab lists past prompts with full log detail. Debug logs are written to `%TEMP%/agent-mvp-logs`.
 
@@ -452,11 +456,13 @@ cp .env.local.example .env.local
 
 | Variable | Purpose | Required |
 |----------|---------|----------|
-| `OPENAI_API_KEY` | Lightweight BigBoss routing (gpt-4o-mini), Whisper voice transcription, design/feedback summarisation | Optional |
+| `OPENAI_API_KEY` | Lightweight BigBoss routing, Whisper voice transcription, design/feedback summarisation, API-fallback Overseer reviews | Optional |
 | `PORT` | Override the default port (3000) | Optional |
 | `SKILLS_ROOT` | Override the skills directory path | Optional |
 | `CURSOR_CLI` | Override the Cursor agent CLI path | Optional |
 | `CURSOR_AGENT_MODEL` | Model for the Cursor Agent CLI (default: `auto`, to avoid Opus usage limits) | Optional |
+| `BIGBOSS_MODEL` | OpenAI model for BigBoss planning and summarisation (default: `gpt-4o-mini`; set to `gpt-4o` for better accuracy) | Optional |
+| `MERGE_MODEL` | OpenAI model for design document merge (default: same as `BIGBOSS_MODEL`) | Optional |
 
 ## Licence
 

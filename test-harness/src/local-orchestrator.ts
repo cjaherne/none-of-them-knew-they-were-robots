@@ -16,6 +16,16 @@ import {
 import { loadOrBuildCache, getCacheBrief } from "./context-cache";
 import { parseCodingNotes, shouldLoopOnFeedback } from "./feedback-criteria";
 
+/** Configurable OpenAI model for BigBoss planning and design merge (default: gpt-4o-mini). */
+function getBigBossModel(): string {
+  return process.env.BIGBOSS_MODEL || "gpt-4o-mini";
+}
+
+/** Configurable OpenAI model for design merge (default: same as BigBoss). */
+function getMergeModel(): string {
+  return process.env.MERGE_MODEL || getBigBossModel();
+}
+
 interface StageDefinition {
   name: string;
   agent: string;
@@ -244,8 +254,9 @@ async function mergeDesignOutputs(
         `## ${d.agent} design\n${d.content.slice(0, 16000)}`,
       ).join("\n\n---\n\n");
 
+      const mergeModel = getMergeModel();
       const response = await client.chat.completions.create({
-        model: "gpt-4o-mini",
+        model: mergeModel,
         messages: [
           {
             role: "system",
@@ -260,7 +271,7 @@ async function mergeDesignOutputs(
       const merged = response.choices[0]?.message?.content;
       if (merged) {
         await writeDesign(merged);
-        createLogger("orchestrator").info(`Merged ${designFiles.length} design documents via OpenAI`, undefined, "flow");
+        createLogger("orchestrator").info(`Merged ${designFiles.length} design documents via OpenAI (${mergeModel})`, undefined, "flow");
         return;
       }
     } catch (err) {
@@ -306,9 +317,10 @@ async function planWithOpenAI(
     const systemPrompt = useFullFormat ? BIGBOSS_CONTEXT_BROKER_PROMPT : BIGBOSS_ROUTING_PROMPT;
     const maxTokens = useFullFormat ? 1024 : 128;
 
+    const model = getBigBossModel();
     const start = Date.now();
     const response = await client.chat.completions.create({
-      model: "gpt-4o-mini",
+      model,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userMessage },
@@ -323,7 +335,7 @@ async function planWithOpenAI(
     if (!content) return null;
 
     const parsed = JSON.parse(content);
-    createLogger("bigboss").info(`OpenAI ${useFullFormat ? "context broker" : "routing"} in ${elapsed}s`, { stages: parsed.stages, complexity: parsed.complexity }, "flow");
+    createLogger("bigboss").info(`OpenAI ${useFullFormat ? "context broker" : "routing"} (${model}) in ${elapsed}s`, { stages: parsed.stages, complexity: parsed.complexity }, "flow");
     if (parsed.agentBriefs) {
       for (const [agent, brief] of Object.entries(parsed.agentBriefs)) {
         createLogger("bigboss").debug(`Agent brief for ${agent}: ${(brief as string).slice(0, 100)}...`);
@@ -510,9 +522,10 @@ async function bigBossSummarize(
         ? "You are BigBoss, a pipeline orchestrator. Summarize this design document in 2-3 spoken sentences for a human who will decide whether to approve it. Mention what will be built, roughly how many files/components, and key architectural choices. Be concise."
         : "You are BigBoss, a pipeline orchestrator. Summarize these coding feedback notes in 1-2 spoken sentences for a human. Focus on deviations from the design and any issues found. Be concise.";
 
+      const model = getBigBossModel();
       const start = Date.now();
       const response = await client.chat.completions.create({
-        model: "gpt-4o-mini",
+        model,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: content.slice(0, 4000) },
@@ -524,7 +537,7 @@ async function bigBossSummarize(
       const elapsed = ((Date.now() - start) / 1000).toFixed(1);
       const summary = response.choices[0]?.message?.content?.trim();
       if (summary) {
-        createLogger("bigboss").debug(`Summarized ${filename} in ${elapsed}s`);
+        createLogger("bigboss").debug(`Summarized ${filename} in ${elapsed}s (${model})`);
         return summary;
       }
     } catch (err) {
@@ -548,8 +561,8 @@ async function readDesignPreview(workDir: string): Promise<string> {
   }
 }
 
-const MAX_OVERSEER_DESIGN_ITERATIONS = 1;
-const MAX_OVERSEER_CODE_ITERATIONS = 1;
+const MAX_OVERSEER_DESIGN_ITERATIONS = 2;
+const MAX_OVERSEER_CODE_ITERATIONS = 2;
 
 interface OverseerDesignReviewResult {
   fit: "ok" | "gaps";
@@ -563,15 +576,61 @@ interface OverseerCodeReviewResult {
   suggestedSubTask?: { prompt: string };
 }
 
-async function overseerPostDesignReview(workDir: string, originalTask: string): Promise<OverseerDesignReviewResult | null> {
+function parseOverseerJson<T extends { fit: string }>(text: string, validFits: string[]): T | null {
+  const jsonMatch = text.match(/\{[\s\S]*"fit"[\s\S]*\}/);
+  if (!jsonMatch) return null;
+  try {
+    const parsed = JSON.parse(jsonMatch[0]) as T;
+    if (!validFits.includes(parsed.fit)) parsed.fit = validFits[0];
+    return parsed;
+  } catch { return null; }
+}
+
+async function overseerPostDesignReview(
+  workDir: string,
+  originalTask: string,
+  skillsRoot: string,
+  pipelineId: string,
+  signal?: AbortSignal,
+): Promise<OverseerDesignReviewResult | null> {
+  const log = createLogger("overseer");
+
+  const agentPrompt = `Review the DESIGN.md in this workspace against the original user task below.\n\n## Original task\n\n${originalTask}`;
+  try {
+    const config: AgentRunConfig = {
+      agentType: "bigboss",
+      category: "design-review",
+      prompt: agentPrompt,
+      pipelineId,
+      skillsRoot,
+      baseBranch: "main",
+      branch: "overseer-review",
+      workspaceReady: true,
+      trivial: true,
+    };
+
+    log.info("Running Overseer design review as agent", undefined, "flow");
+    const result = await runAgent(config, workDir, undefined, signal);
+    const text = result.parsed.assistantMessage || result.output;
+    const parsed = parseOverseerJson<OverseerDesignReviewResult>(text, ["ok", "gaps"]);
+    if (parsed) {
+      log.info(`Overseer design review (agent): fit=${parsed.fit}, gaps=${(parsed.gaps || []).length}`, undefined, "flow");
+      return parsed;
+    }
+    log.warn("Could not parse Overseer agent JSON, falling back to API", undefined, "flow");
+  } catch (err) {
+    log.warn("Overseer agent design review failed, falling back to API", { err: String(err) }, "flow");
+  }
+
   if (!process.env.OPENAI_API_KEY) return null;
   try {
     const content = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
-    const designSlice = content.slice(0, 24000);
+    const designSlice = content.slice(0, 32000);
     const { default: OpenAI } = await import("openai");
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const model = getBigBossModel();
     const response = await client.chat.completions.create({
-      model: "gpt-4o-mini",
+      model,
       messages: [
         {
           role: "system",
@@ -579,7 +638,7 @@ async function overseerPostDesignReview(workDir: string, originalTask: string): 
         },
         { role: "user", content: `## Original task\n\n${originalTask.slice(0, 8000)}\n\n## Design document\n\n${designSlice}` },
       ],
-      max_tokens: 1024,
+      max_tokens: 2048,
       temperature: 0.2,
       response_format: { type: "json_object" },
     });
@@ -589,22 +648,58 @@ async function overseerPostDesignReview(workDir: string, originalTask: string): 
     if (parsed.fit !== "ok" && parsed.fit !== "gaps") parsed.fit = "ok";
     return parsed;
   } catch (err) {
-    createLogger("orchestrator").warn("Overseer post-design review failed", { err: String(err) }, "flow");
+    log.warn("Overseer post-design review (API fallback) failed", { err: String(err) }, "flow");
     return null;
   }
 }
 
-async function overseerPostCodeReview(workDir: string, originalTask: string): Promise<OverseerCodeReviewResult | null> {
+async function overseerPostCodeReview(
+  workDir: string,
+  originalTask: string,
+  skillsRoot: string,
+  pipelineId: string,
+  signal?: AbortSignal,
+): Promise<OverseerCodeReviewResult | null> {
+  const log = createLogger("overseer");
+
+  const agentPrompt = `Review the implementation in this workspace against the original user task and DESIGN.md.\n\n## Original task\n\n${originalTask}`;
+  try {
+    const config: AgentRunConfig = {
+      agentType: "bigboss",
+      category: "code-review",
+      prompt: agentPrompt,
+      pipelineId,
+      skillsRoot,
+      baseBranch: "main",
+      branch: "overseer-review",
+      workspaceReady: true,
+      trivial: true,
+    };
+
+    log.info("Running Overseer code review as agent", undefined, "flow");
+    const result = await runAgent(config, workDir, undefined, signal);
+    const text = result.parsed.assistantMessage || result.output;
+    const parsed = parseOverseerJson<OverseerCodeReviewResult>(text, ["ok", "drift"]);
+    if (parsed) {
+      log.info(`Overseer code review (agent): fit=${parsed.fit}, issues=${(parsed.missingOrWrong || []).length}`, undefined, "flow");
+      return parsed;
+    }
+    log.warn("Could not parse Overseer agent JSON, falling back to API", undefined, "flow");
+  } catch (err) {
+    log.warn("Overseer agent code review failed, falling back to API", { err: String(err) }, "flow");
+  }
+
   if (!process.env.OPENAI_API_KEY) return null;
   try {
     const designContent = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
-    const designSlice = designContent.slice(0, 24000);
+    const designSlice = designContent.slice(0, 32000);
     const brief = buildContextBrief("planning", workDir);
     const fileTree = brief.fileTree || "(no file tree)";
     const { default: OpenAI } = await import("openai");
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const model = getBigBossModel();
     const response = await client.chat.completions.create({
-      model: "gpt-4o-mini",
+      model,
       messages: [
         {
           role: "system",
@@ -612,10 +707,10 @@ async function overseerPostCodeReview(workDir: string, originalTask: string): Pr
         },
         {
           role: "user",
-          content: `## Original task\n\n${originalTask.slice(0, 6000)}\n\n## Design\n\n${designSlice.slice(0, 12000)}\n\n## File tree\n\`\`\`\n${fileTree}\n\`\`\``,
+          content: `## Original task\n\n${originalTask.slice(0, 8000)}\n\n## Design\n\n${designSlice.slice(0, 16000)}\n\n## File tree\n\`\`\`\n${fileTree}\n\`\`\``,
         },
       ],
-      max_tokens: 1024,
+      max_tokens: 2048,
       temperature: 0.2,
       response_format: { type: "json_object" },
     });
@@ -625,7 +720,7 @@ async function overseerPostCodeReview(workDir: string, originalTask: string): Pr
     if (parsed.fit !== "ok" && parsed.fit !== "drift") parsed.fit = "ok";
     return parsed;
   } catch (err) {
-    createLogger("orchestrator").warn("Overseer post-code review failed", { err: String(err) }, "flow");
+    log.warn("Overseer post-code review (API fallback) failed", { err: String(err) }, "flow");
     return null;
   }
 }
@@ -830,7 +925,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
         taskStore.emit_log(task.id, `Merged ${group.stageDefs.length} design documents`);
 
         // Overseer: post-design review for requirements fit
-        const designReview = await overseerPostDesignReview(workDir, task.prompt);
+        const designReview = await overseerPostDesignReview(workDir, task.prompt, skillsRoot, task.id, signal);
         if (designReview?.fit === "gaps" && designReviewIterations < MAX_OVERSEER_DESIGN_ITERATIONS) {
           designReviewIterations++;
           designFeedback = designReview.suggestedSubTask?.prompt
@@ -1051,7 +1146,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
 
           // --- Overseer: post-code review ---
           if (stage.category === "coding" && result.success && codeReviewIterations < MAX_OVERSEER_CODE_ITERATIONS) {
-            const codeReview = await overseerPostCodeReview(workDir, task.prompt);
+            const codeReview = await overseerPostCodeReview(workDir, task.prompt, skillsRoot, task.id, signal);
             if (codeReview?.fit === "drift" && codeReview.suggestedSubTask?.prompt) {
               codeReviewIterations++;
               taskStore.emit_log(task.id, `Overseer code review: drift found. Running fix-up pass (${codeReviewIterations}).`);

@@ -317,6 +317,52 @@ The BASE_BRANCH for the PR is provided in the task context below. Use it for \`g
 Do NOT merge the PR. Create and push a tag for the new version after pushing the branch.
 `.trim();
 
+const PREAMBLE_DESIGN_REVIEW = `
+You are running as the BigBoss Overseer agent with full file-system access.
+Your role is DESIGN REVIEW -- compare the design document against the original
+user task and identify any gaps or missing requirements.
+
+Your job:
+1. Read DESIGN.md in full from the workspace using your filesystem tool.
+2. The "Original task (source of truth)" section at the top of DESIGN.md
+   contains every requirement the user stated. Go through it sentence by sentence.
+3. For each requirement, check that the design document addresses it with
+   a concrete design element (not just a passing mention).
+4. For games: verify visual perspective, player count, character selection,
+   game modes, screen layout, input methods, and sound requirements.
+5. Respond with ONLY a JSON object on a single line:
+   { "fit": "ok" | "gaps", "gaps": ["gap1", ...], "suggestedSubTask": { "prompt": "instructions" } }
+   If fit is "ok", gaps and suggestedSubTask are optional.
+   If fit is "gaps", list every missing or underspecified requirement in gaps,
+   and provide focused designer instructions in suggestedSubTask.prompt.
+
+DO NOT modify any files. This is a read-only review.
+`.trim();
+
+const PREAMBLE_CODE_REVIEW = `
+You are running as the BigBoss Overseer agent with full file-system access.
+Your role is CODE REVIEW -- compare the implemented code against the original
+user task and design document to identify drift or missing features.
+
+Your job:
+1. Read DESIGN.md in full from the workspace using your filesystem tool.
+2. Read the key source files (e.g. main.lua, conf.lua, files in src/) to
+   understand what was actually implemented.
+3. The "Original task (source of truth)" section in DESIGN.md contains the
+   user's full requirement list. Verify each requirement is implemented in code.
+4. For games: check that love.load/love.update/love.draw exist and contain
+   the expected logic, that scenes listed in the design have corresponding files,
+   that input handling covers keyboard + gamepad, and that stated features
+   (character selection, split-screen, specific game modes, etc.) are present.
+5. Respond with ONLY a JSON object on a single line:
+   { "fit": "ok" | "drift", "missingOrWrong": ["item1", ...], "suggestedSubTask": { "prompt": "instructions" } }
+   If fit is "ok", missingOrWrong and suggestedSubTask are optional.
+   If fit is "drift", list every missing or incorrectly implemented feature,
+   and provide focused coder instructions in suggestedSubTask.prompt.
+
+DO NOT modify any files. This is a read-only review.
+`.trim();
+
 function getPreamble(category: string, parallelDesign?: boolean): string {
   switch (category) {
     case "planning": return PREAMBLE_PLANNING;
@@ -324,6 +370,8 @@ function getPreamble(category: string, parallelDesign?: boolean): string {
     case "coding": return PREAMBLE_CODING;
     case "validation": return PREAMBLE_TESTING;
     case "release": return PREAMBLE_RELEASE;
+    case "design-review": return PREAMBLE_DESIGN_REVIEW;
+    case "code-review": return PREAMBLE_CODE_REVIEW;
     default: return PREAMBLE_CODING;
   }
 }
@@ -579,6 +627,17 @@ export function buildContextBrief(
           if (content) brief.handoffContent[r.agent] = content;
         }
       }
+      break;
+
+    case "design-review":
+      brief.fileTree = getFileTree(workDir);
+      brief.designDoc = getDesignDoc(workDir, 32000);
+      break;
+
+    case "code-review":
+      brief.fileTree = getFileTree(workDir);
+      brief.designDoc = getDesignDoc(workDir, 32000);
+      brief.architecturalFiles = getArchitecturalFiles(workDir, 12000);
       break;
   }
 
