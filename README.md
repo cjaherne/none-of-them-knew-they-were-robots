@@ -272,7 +272,7 @@ The **Overseer** (BigBoss as a full agent) runs after design merge and after cod
 
 **Task decomposition**: For complex tasks (as rated by BigBoss), the orchestrator decomposes the coding phase into up to 3 sequential sub-tasks (core structure, features, polish). Each sub-task builds on the previous one's output, enabling incremental implementation instead of a single monolithic pass.
 
-**Execution verification**: After coding completes, the orchestrator attempts to verify the output by running it -- Lua syntax checks (`luac -p`) for LÖVE projects, `npm run build` for Node projects. If verification fails, a fix-up agent pass is triggered automatically.
+**Execution verification**: After coding completes, the orchestrator attempts to verify the output by running it -- Lua syntax checks (`luac -p`) for LÖVE projects, and optionally a short runtime run (`love .`) when `LOVE_RUNTIME_VERIFY=1` is set (catches runtime errors like bad `setColor` arguments); `npm run build` for Node projects. If verification fails, a fix-up agent pass is triggered automatically.
 
 **Self-verification**: Coding agents are instructed to perform a pre-completion checklist -- re-reading the Original task section, verifying every requirement was implemented, checking for syntax errors, and confirming framework-specific callbacks (e.g. `love.load`/`love.update`/`love.draw` for LÖVE).
 
