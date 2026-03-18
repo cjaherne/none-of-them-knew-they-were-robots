@@ -1,6 +1,6 @@
 import * as path from "path";
 import { promises as fs, accessSync, readFileSync } from "fs";
-import { execSync as cpExecSync } from "child_process";
+import { execSync as cpExecSync, spawn } from "child_process";
 import { TaskStatus, PipelineStage, PipelineStageAgent, createLogger } from "@agents/shared";
 import { taskStore, MvpTask, PipelineMode, StageStatus, ApprovalResponse } from "./local-task-store";
 import {
@@ -756,6 +756,68 @@ interface ExecVerifyResult {
   output: string;
 }
 
+const LOVE_RUNTIME_VERIFY_TIMEOUT_MS = 10_000;
+
+/** Run LÖVE game briefly; non-zero exit or crash => failed. Timeout => pass (kill process). */
+async function loveRuntimeCheck(
+  workDir: string,
+  log: ReturnType<typeof createLogger>,
+): Promise<ExecVerifyResult> {
+  const loveCmd = "love";
+  const runCmd = "love .";
+
+  try {
+    cpExecSync(`${loveCmd} --version`, { stdio: "pipe" });
+  } catch {
+    log.info("love not available, skipping runtime verify", undefined, "flow");
+    return { passed: true, command: `${runCmd} (skipped)`, output: "" };
+  }
+
+  return new Promise<ExecVerifyResult>((resolve) => {
+    let settled = false;
+    const once = (result: ExecVerifyResult) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    const child = spawn(loveCmd, ["."], {
+      cwd: workDir,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+      log.info(`Exec verify passed: ${runCmd} (no crash within ${LOVE_RUNTIME_VERIFY_TIMEOUT_MS / 1000}s)`, undefined, "flow");
+      once({ passed: true, command: runCmd, output: "" });
+    }, LOVE_RUNTIME_VERIFY_TIMEOUT_MS);
+
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (code !== 0 && code !== null) {
+        const output = (stderr + "\n" + stdout).trim().slice(0, 4000);
+        log.warn(`Exec verify failed: ${runCmd}`, { output: output.slice(0, 200) }, "flow");
+        once({ passed: false, command: runCmd, output });
+      } else {
+        log.info(`Exec verify passed: ${runCmd}`, undefined, "flow");
+        once({ passed: true, command: runCmd, output: "" });
+      }
+    });
+
+    child.on("error", (err) => {
+      clearTimeout(timeout);
+      const output = (err.message || String(err)).slice(0, 4000);
+      log.warn(`Exec verify error: ${runCmd}`, { err: output.slice(0, 200) }, "flow");
+      once({ passed: false, command: runCmd, output });
+    });
+  });
+}
+
 async function tryRunProject(workDir: string): Promise<ExecVerifyResult | null> {
   const log = createLogger("exec-verify");
 
@@ -764,8 +826,9 @@ async function tryRunProject(workDir: string): Promise<ExecVerifyResult | null> 
   };
 
   let command: string | null = null;
+  const isLove = hasFile("main.lua") && hasFile("conf.lua");
 
-  if (hasFile("main.lua") && hasFile("conf.lua")) {
+  if (isLove) {
     const hasSrc = hasFile("src");
     if (process.platform === "win32") {
       command = hasSrc
@@ -803,6 +866,12 @@ async function tryRunProject(workDir: string): Promise<ExecVerifyResult | null> 
     });
     const output = buf.toString().slice(0, 4000);
     log.info(`Exec verify passed: ${command}`, undefined, "flow");
+
+    if (isLove && process.env.LOVE_RUNTIME_VERIFY === "1") {
+      const loveResult = await loveRuntimeCheck(workDir, log);
+      if (!loveResult.passed) return loveResult;
+    }
+
     return { passed: true, command, output };
   } catch (err: unknown) {
     const output = ((err as { stderr?: Buffer })?.stderr?.toString() || (err as Error)?.message || "").slice(0, 4000);
