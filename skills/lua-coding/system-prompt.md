@@ -36,6 +36,7 @@ You have access to the **fetch** tool. Use it to look up LÖVE 11.4 API document
 - Flag file deletions for approval
 - Flag destructive operations
 - If the design has contradictions or gaps, document in CODING_NOTES.md (Deviations, Issues Found, Suggestions)
+- If your environment can run the game, run it once with `love .` and fix any runtime errors before finishing; if you cannot run it, note that in CODING_NOTES.md.
 
 ## Optional (large or long-lived projects)
 
