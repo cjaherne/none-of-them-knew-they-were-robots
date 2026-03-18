@@ -255,20 +255,28 @@ The pipeline now supports human-in-the-loop checkpoints:
 
 #### Context passing
 
-Agents receive rich, role-specific codebase context injected directly into their prompts:
+Agents receive rich, role-specific codebase context:
 
 - **Design agents** get the full file tree, tech stack detection, git history, branch diff stats, project config files, and key architectural source files (entry points, types, interfaces).
-- **Coding agents** get the file tree, the full `DESIGN.md` content (no disk read needed), project config, and upstream handoff files.
-- **Testing agents** get `DESIGN.md`, existing test patterns with code samples, npm scripts, and upstream handoffs.
+- **Coding agents** get a **preview** of `DESIGN.md` (first 3000 chars) in-prompt for orientation, then are instructed to **read the full DESIGN.md from disk** using their filesystem tool. This eliminates context truncation -- the agent reads the complete, untruncated design on disk. Upstream handoff files (`.pipeline/*.handoff.md`) are similarly read from disk rather than injected.
+- **Testing agents** get a `DESIGN.md` preview and read the full document from disk, plus existing test patterns and npm scripts.
 - **BigBoss** acts as a **context broker** -- it receives a workspace summary and produces per-agent focus briefs (1-3 sentences) telling each agent exactly which files and patterns to pay attention to.
 
 A **codebase summary cache** (`.pipeline/context-cache.json`) persists per-file purpose summaries with incremental git-diff updates, so repeated pipeline runs don't re-analyse unchanged files.
 
 #### Parallel design stages
 
-For complex tasks, BigBoss can fan out design work to multiple specialist designers (UX, Core Code, Graphics, Game Designer) running in parallel. For full videogame or Lua/LÖVE tasks it selects game-designer, core-code-designer, ux-designer, and graphics-designer together -- each now with Lua/game-aware prompts. Each designer writes to `.pipeline/<agent>-design.md`; the orchestrator merges these into a unified `DESIGN.md` (via configurable OpenAI model or concatenation fallback) before the coding stage. The merged DESIGN.md is prefixed with the **Original task (source of truth)** so the coder always has the full user request; the Game Designer outputs a **requirements checklist** (with sentence-by-sentence cross-referencing) and the merge preserves it.
+For complex tasks, BigBoss can fan out design work to multiple specialist designers (UX, Core Code, Graphics, Game Designer) running in parallel. For full videogame or Lua/LÖVE tasks it selects game-designer, core-code-designer, ux-designer, and graphics-designer together -- each now with Lua/game-aware prompts. Each designer writes to `.pipeline/<agent>-design.md`; the orchestrator merges these into a unified `DESIGN.md` using a three-tier strategy: **agent-based merge** (a full Cursor agent reads all design files from disk with no truncation), then OpenAI API merge as fallback, then concatenation. The merged DESIGN.md is prefixed with the **Original task (source of truth)** so the coder always has the full user request; the Game Designer outputs a **requirements checklist** (with sentence-by-sentence cross-referencing) and the merge preserves it.
 
-The **Overseer** (BigBoss as a full agent) runs after design merge and after coding to verify requirements fit. Unlike the previous API-only approach, the Overseer now uses the Cursor agent CLI with filesystem MCP to read actual source files (not just file trees), fetch MCP to verify LÖVE API usage, and sequential-thinking MCP for complex reasoning. If the agent review fails, it falls back to an OpenAI API call. The Overseer can trigger up to **2 re-runs** of design or code with focused feedback when gaps or drift are found. The Test Harness counts each design output file so the UI shows one file per designer (e.g. "1 file(s)" for each).
+The **Overseer** (BigBoss as a full agent) runs after design merge and after coding to verify requirements fit. The code review Overseer reads ALL source files from disk (not just file trees) and also reads `CODING_NOTES.md` for coder deviation context. If the agent review fails, it falls back to an OpenAI API call (which now also receives key source file contents and coding notes). The Overseer can trigger up to **2 re-runs** of design or code with focused feedback when gaps or drift are found.
+
+**Task decomposition**: For complex tasks (as rated by BigBoss), the orchestrator decomposes the coding phase into up to 3 sequential sub-tasks (core structure, features, polish). Each sub-task builds on the previous one's output, enabling incremental implementation instead of a single monolithic pass.
+
+**Execution verification**: After coding completes, the orchestrator attempts to verify the output by running it -- Lua syntax checks (`luac -p`) for LÖVE projects, `npm run build` for Node projects. If verification fails, a fix-up agent pass is triggered automatically.
+
+**Self-verification**: Coding agents are instructed to perform a pre-completion checklist -- re-reading the Original task section, verifying every requirement was implemented, checking for syntax errors, and confirming framework-specific callbacks (e.g. `love.load`/`love.update`/`love.draw` for LÖVE).
+
+**Complexity-aware prompts**: BigBoss rates each task as trivial, moderate, or complex. Complex tasks receive additional coding guidance: read the design multiple times, implement incrementally, and re-read the Original task after each major feature.
 
 Structured logging and task history are persisted in SQLite (`test-harness/data/logs.db`). The server exposes `GET /logs`, `GET /tasks/history`, `GET /tasks/:id/detail`, and `POST /config/log-level`; the event log shows level badges and category tags, and the History tab lists past prompts with full log detail. Debug logs are written to `%TEMP%/agent-mvp-logs`.
 
@@ -397,7 +405,7 @@ The agent lifecycle:
 3. Configure git identity (user name, email, credential helper)
 4. Write cursor rules files to `/workspace/.cursor/rules/` (multiple `.md` files)
 5. Write MCP config to `/workspace/.cursor/mcp.json` (with env var templating for secrets)
-6. Build prompt: role preamble + BigBoss context brief + file tree + git history + design doc + upstream handoffs + system prompt + task + tool hints
+6. Build prompt: role preamble + BigBoss context brief + file tree + git history + design doc preview (coding agents read full doc from disk) + upstream handoff pointers + system prompt + task + tool hints
 7. Run `cursor-agent -p --force --trust --output-format stream-json "<prompt>"`
 8. Validate output: check forbidden actions, verify required fields (retry once if missing)
 9. Commit and push changes to a branch (`agent/<pipeline>/<agent-type>`)
