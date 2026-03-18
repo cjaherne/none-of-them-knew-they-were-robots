@@ -1,5 +1,6 @@
 import * as path from "path";
-import { promises as fs } from "fs";
+import { promises as fs, accessSync, readFileSync } from "fs";
+import { execSync as cpExecSync } from "child_process";
 import { TaskStatus, PipelineStage, PipelineStageAgent, createLogger } from "@agents/shared";
 import { taskStore, MvpTask, PipelineMode, StageStatus, ApprovalResponse } from "./local-task-store";
 import {
@@ -210,6 +211,9 @@ async function mergeDesignOutputs(
   workDir: string,
   results: AgentRunResult[],
   originalTask?: string,
+  skillsRoot?: string,
+  pipelineId?: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const designFiles: Array<{ agent: string; content: string }> = [];
 
@@ -223,7 +227,6 @@ async function mergeDesignOutputs(
     } catch { /* agent didn't produce a per-agent design file */ }
   }
 
-  // Fallback: if no per-agent files found, read DESIGN.md once
   if (designFiles.length === 0) {
     try {
       const content = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
@@ -245,6 +248,16 @@ async function mergeDesignOutputs(
     return;
   }
 
+  // R5: Try agent-based merge first (reads full files from disk, no truncation)
+  if (skillsRoot && pipelineId && originalTask) {
+    const agentMerged = await mergeDesignWithAgent(
+      workDir, designFiles, originalTask, skillsRoot, pipelineId, signal,
+    );
+    if (agentMerged) return;
+    createLogger("orchestrator").info("Agent-based merge failed, falling back to API merge", undefined, "flow");
+  }
+
+  // Fallback: OpenAI API merge (truncated)
   if (process.env.OPENAI_API_KEY) {
     try {
       const { default: OpenAI } = await import("openai");
@@ -693,8 +706,16 @@ async function overseerPostCodeReview(
   try {
     const designContent = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
     const designSlice = designContent.slice(0, 32000);
-    const brief = buildContextBrief("planning", workDir);
+    const brief = buildContextBrief("code-review", workDir);
     const fileTree = brief.fileTree || "(no file tree)";
+    const sourceFiles = brief.architecturalFiles || "(no source files read)";
+
+    let codingNotes = "";
+    try {
+      codingNotes = await fs.readFile(path.join(workDir, "CODING_NOTES.md"), "utf-8");
+      codingNotes = codingNotes.slice(0, 4000);
+    } catch { /* no coding notes */ }
+
     const { default: OpenAI } = await import("openai");
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const model = getBigBossModel();
@@ -703,11 +724,11 @@ async function overseerPostCodeReview(
       messages: [
         {
           role: "system",
-          content: "You are an Overseer reviewing implementation against the design and original task. You receive the design document and a file tree. Decide if the implementation (inferred from the file tree and project layout) matches the design and covers the Original task requirements. Respond with JSON only: { \"fit\": \"ok\" | \"drift\", \"missingOrWrong\": [\"item1\", \"item2\"] (if fit is drift), \"suggestedSubTask\": { \"prompt\": \"focused instructions for the coder to add or fix these items\" } (optional, if fit is drift) }. Be concise.",
+          content: "You are an Overseer reviewing implementation against the design and original task. You receive the design document, a file tree, AND the actual content of key source files. Verify that each requirement from the Original task is implemented in the source code, not just that a file exists. Respond with JSON only: { \"fit\": \"ok\" | \"drift\", \"missingOrWrong\": [\"item1\", \"item2\"] (if fit is drift), \"suggestedSubTask\": { \"prompt\": \"focused instructions for the coder to add or fix these items\" } (optional, if fit is drift) }. Be concise.",
         },
         {
           role: "user",
-          content: `## Original task\n\n${originalTask.slice(0, 8000)}\n\n## Design\n\n${designSlice.slice(0, 16000)}\n\n## File tree\n\`\`\`\n${fileTree}\n\`\`\``,
+          content: `## Original task\n\n${originalTask.slice(0, 8000)}\n\n## Design\n\n${designSlice.slice(0, 12000)}\n\n## File tree\n\`\`\`\n${fileTree}\n\`\`\`\n\n## Key source files\n${sourceFiles}${codingNotes ? `\n\n## CODING_NOTES.md\n${codingNotes}` : ""}`,
         },
       ],
       max_tokens: 2048,
@@ -722,6 +743,188 @@ async function overseerPostCodeReview(
   } catch (err) {
     log.warn("Overseer post-code review (API fallback) failed", { err: String(err) }, "flow");
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R3: Execution verification -- attempt to run the project and capture errors
+// ---------------------------------------------------------------------------
+
+interface ExecVerifyResult {
+  passed: boolean;
+  command: string;
+  output: string;
+}
+
+async function tryRunProject(workDir: string): Promise<ExecVerifyResult | null> {
+  const log = createLogger("exec-verify");
+
+  const hasFile = (name: string): boolean => {
+    try { accessSync(path.join(workDir, name)); return true; } catch { return false; }
+  };
+
+  let command: string | null = null;
+
+  if (hasFile("main.lua") && hasFile("conf.lua")) {
+    command = "luac -p main.lua && for /r src %%f in (*.lua) do luac -p %%f";
+    if (process.platform !== "win32") {
+      command = "luac -p main.lua && find src -name '*.lua' -exec luac -p {} +";
+    }
+    try {
+      cpExecSync("luac -v", { cwd: workDir, stdio: "pipe" });
+    } catch {
+      command = null;
+      log.info("luac not available, skipping Lua syntax check", undefined, "flow");
+    }
+  } else if (hasFile("package.json")) {
+    try {
+      const pkg = JSON.parse(readFileSync(path.join(workDir, "package.json"), "utf-8"));
+      if (pkg.scripts?.build) {
+        command = "npm run build";
+      } else if (pkg.scripts?.start) {
+        command = "npm run start -- --help 2>&1 || true";
+      }
+    } catch { /* can't read package.json */ }
+  }
+
+  if (!command) return null;
+
+  try {
+    const buf = cpExecSync(command, {
+      cwd: workDir,
+      stdio: "pipe",
+      timeout: 30_000,
+    });
+    const output = buf.toString().slice(0, 4000);
+    log.info(`Exec verify passed: ${command}`, undefined, "flow");
+    return { passed: true, command, output };
+  } catch (err: unknown) {
+    const output = ((err as { stderr?: Buffer })?.stderr?.toString() || (err as Error)?.message || "").slice(0, 4000);
+    log.warn(`Exec verify failed: ${command}`, { output: output.slice(0, 200) }, "flow");
+    return { passed: false, command, output };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R2: Task decomposition -- break complex coding into sequential sub-tasks
+// ---------------------------------------------------------------------------
+
+const MAX_SUB_TASKS = 3;
+
+async function decomposeTask(
+  workDir: string,
+  originalTask: string,
+): Promise<string[] | null> {
+  if (!process.env.OPENAI_API_KEY) return null;
+  const log = createLogger("task-decomp");
+
+  try {
+    const designContent = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
+    const designSlice = designContent.slice(0, 16000);
+
+    const { default: OpenAI } = await import("openai");
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const model = getBigBossModel();
+
+    const response = await client.chat.completions.create({
+      model,
+      messages: [
+        {
+          role: "system",
+          content: `You decompose complex game/application tasks into ${MAX_SUB_TASKS} sequential coding sub-tasks. Each sub-task builds on the previous one's output. The coder receives the full DESIGN.md on disk, so do not repeat the design -- just specify what to implement in each pass.
+
+Respond with JSON: { "subTasks": ["task 1 instructions", "task 2 instructions", "task 3 instructions"] }
+
+Guidelines:
+- Sub-task 1: Core structure, entry point, configuration, basic state machine/scene management
+- Sub-task 2: Main gameplay/feature implementation, entities, game logic, UI screens  
+- Sub-task 3: Polish -- audio, visual effects, edge cases, input handling refinement, final integration
+- Each sub-task must be self-contained and produce working code
+- Reference the DESIGN.md for details (the coder will read it from disk)`,
+        },
+        {
+          role: "user",
+          content: `## Original task\n\n${originalTask.slice(0, 6000)}\n\n## Design summary\n\n${designSlice}`,
+        },
+      ],
+      max_tokens: 2048,
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+    });
+
+    const raw = response.choices[0]?.message?.content;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed.subTasks) || parsed.subTasks.length === 0) return null;
+    log.info(`Decomposed into ${parsed.subTasks.length} sub-tasks`, undefined, "flow");
+    return parsed.subTasks.slice(0, MAX_SUB_TASKS);
+  } catch (err) {
+    log.warn("Task decomposition failed", { err: String(err) }, "flow");
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R5: Agent-based design merge -- run full agent to merge design files from disk
+// ---------------------------------------------------------------------------
+
+async function mergeDesignWithAgent(
+  workDir: string,
+  designFiles: Array<{ agent: string; content: string }>,
+  originalTask: string,
+  skillsRoot: string,
+  pipelineId: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const log = createLogger("design-merge");
+
+  const fileList = designFiles.map((d) => `.pipeline/${d.agent}-design.md`).join(", ");
+  const agentPrompt = `Merge the following parallel design documents into a single unified DESIGN.md:
+${fileList}
+
+Read each file from disk using your filesystem tool. Combine all sections, resolve conflicts
+by preferring the more specific/detailed version, and produce a coherent DESIGN.md file.
+
+CRITICAL: Preserve EVERY requirement from ALL source documents. Do not drop items from
+requirements checklists or bullet lists. If documents have a requirementsChecklist or
+similar section, include ALL items in the merged output.
+
+Write the merged result to DESIGN.md in the workspace root.
+
+## Original task (include this at the top of DESIGN.md)
+
+${originalTask}`;
+
+  try {
+    const config: AgentRunConfig = {
+      agentType: "bigboss",
+      category: "coding",
+      prompt: agentPrompt,
+      pipelineId,
+      skillsRoot,
+      baseBranch: "main",
+      branch: "design-merge",
+      workspaceReady: true,
+      trivial: true,
+    };
+
+    log.info(`Running agent-based design merge for ${designFiles.length} files`, undefined, "flow");
+    const result = await runAgent(config, workDir, undefined, signal);
+    if (result.success) {
+      try {
+        await fs.access(path.join(workDir, "DESIGN.md"));
+        log.info("Agent-based design merge succeeded", undefined, "flow");
+        return true;
+      } catch {
+        log.warn("Agent merge ran but DESIGN.md not found", undefined, "flow");
+        return false;
+      }
+    }
+    log.warn("Agent-based design merge failed", undefined, "flow");
+    return false;
+  } catch (err) {
+    log.warn("Agent-based design merge error", { err: String(err) }, "flow");
+    return false;
   }
 }
 
@@ -921,7 +1124,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
 
       // Merge parallel design outputs if this was a design group
       if (group.stageDefs[0]?.category === "design" && group.stageDefs.length > 1) {
-        await mergeDesignOutputs(workDir, parallelResults, task.prompt);
+        await mergeDesignOutputs(workDir, parallelResults, task.prompt, skillsRoot, task.id, signal);
         taskStore.emit_log(task.id, `Merged ${group.stageDefs.length} design documents`);
 
         // Overseer: post-design review for requirements fit
@@ -1013,6 +1216,16 @@ export async function runPipeline(task: MvpTask): Promise<void> {
         const releaseBrief = stage.category === "release"
           ? `Target base branch for PR: ${task.baseBranch}. Use this for \`git log ${task.baseBranch}..HEAD\` and \`gh pr create --base ${task.baseBranch}\`.`
           : null;
+
+        // R2: Task decomposition for complex coding tasks
+        let subTasks: string[] | null = null;
+        if (stage.category === "coding" && complexity === "complex") {
+          subTasks = await decomposeTask(workDir, task.prompt);
+          if (subTasks) {
+            taskStore.emit_log(task.id, `Complex task decomposed into ${subTasks.length} sub-tasks`);
+          }
+        }
+
         const config: AgentRunConfig = {
           ...baseConfig,
           prompt: stagePrompt,
@@ -1020,24 +1233,54 @@ export async function runPipeline(task: MvpTask): Promise<void> {
           category: stage.category,
           workspaceReady: true,
           trivial: isTrivial,
+          complexity,
           upstreamResults: upstreamResults.length > 0
             ? [...upstreamResults]
             : undefined,
           agentBrief: releaseBrief ?? agentBriefs[briefKey] ?? agentBriefs[stage.agent] ?? null,
         };
 
-        const result = await runAgent(config, workDir, (event) => {
+        const progressCallback = (event: { type: string; elapsedSeconds?: number; filesEdited?: number }) => {
           const current = taskStore.getTask(task.id);
           if (!current) return;
           if (event.type === "progress") {
             taskStore.emitStageProgress(task.id, stage.name, {
-              elapsedSeconds: event.elapsedSeconds,
-              filesEdited: event.filesEdited,
+              elapsedSeconds: event.elapsedSeconds ?? 0,
+              filesEdited: event.filesEdited ?? 0,
             });
           } else {
             taskStore.updateStage(task.id, stage.name, { status: "running" });
           }
-        }, signal);
+        };
+
+        let result: AgentRunResult;
+
+        if (subTasks && subTasks.length > 1) {
+          // R2: Run sub-tasks sequentially, each building on previous output
+          let lastResult: AgentRunResult | null = null;
+          for (let i = 0; i < subTasks.length; i++) {
+            if (signal.aborted) break;
+            taskStore.emit_log(task.id, `Running sub-task ${i + 1}/${subTasks.length}: ${subTasks[i].slice(0, 100)}...`);
+            const subConfig: AgentRunConfig = {
+              ...config,
+              prompt: `${task.prompt}\n\n## Current sub-task (${i + 1} of ${subTasks.length})\n\n${subTasks[i]}`,
+              workspaceReady: true,
+              subTaskIndex: i,
+              subTaskTotal: subTasks.length,
+            };
+            lastResult = await runAgent(subConfig, workDir, progressCallback, signal);
+            upstreamResults.push(lastResult);
+            taskStore.emit_log(task.id, `Sub-task ${i + 1} ${lastResult.success ? "completed" : "failed"}: ${lastResult.filesModified?.length ?? 0} files`);
+            if (!lastResult.success) break;
+          }
+          result = lastResult || {
+            agent: stage.agent, success: false, output: "No sub-tasks completed",
+            parsed: { assistantMessage: "", filesWritten: [], shellCommands: [], errors: ["No sub-tasks ran"], tokenUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 } },
+            filesModified: [], errors: ["No sub-tasks ran"], durationMs: 0,
+          };
+        } else {
+          result = await runAgent(config, workDir, progressCallback, signal);
+        }
 
         if (signal.aborted) {
           log.warn(`Cancelled during ${stage.name}`, undefined, "status");
@@ -1144,6 +1387,40 @@ export async function runPipeline(task: MvpTask): Promise<void> {
             }
           }
 
+          // --- R3: Execution verification ---
+          if (stage.category === "coding" && result.success) {
+            const execResult = await tryRunProject(workDir);
+            if (execResult && !execResult.passed) {
+              log.warn("Execution verification failed, running fix-up pass", { command: execResult.command }, "status");
+              taskStore.emit_log(task.id, `Exec verification failed (${execResult.command}), running fix-up pass...`);
+
+              const execFixConfig: AgentRunConfig = {
+                ...baseConfig,
+                agentType: stage.agent,
+                category: "coding",
+                workspaceReady: true,
+                trivial: true,
+                complexity,
+                prompt: `${task.prompt}\n\nIMPORTANT: The project failed execution verification. Fix the errors below.\n\nCommand: ${execResult.command}\nErrors:\n${execResult.output}`,
+                upstreamResults: [...upstreamResults],
+              };
+
+              const execFixResult = await runAgent(execFixConfig, workDir, undefined, signal);
+              upstreamResults.push(execFixResult);
+
+              const retryExec = await tryRunProject(workDir);
+              if (retryExec && !retryExec.passed) {
+                log.warn("Exec verification still failing after fix-up", { output: retryExec.output.slice(0, 200) }, "status");
+                taskStore.emit_log(task.id, `Exec verification still failing: ${retryExec.output.slice(0, 200)}`);
+              } else {
+                taskStore.emit_log(task.id, "Execution verification passed after fix-up.");
+              }
+            } else if (execResult?.passed) {
+              log.info(`Execution verification passed (${execResult.command})`, undefined, "status");
+              taskStore.emit_log(task.id, `Execution verification passed (${execResult.command}).`);
+            }
+          }
+
           // --- Overseer: post-code review ---
           if (stage.category === "coding" && result.success && codeReviewIterations < MAX_OVERSEER_CODE_ITERATIONS) {
             const codeReview = await overseerPostCodeReview(workDir, task.prompt, skillsRoot, task.id, signal);
@@ -1158,6 +1435,7 @@ export async function runPipeline(task: MvpTask): Promise<void> {
                 category: "coding",
                 workspaceReady: true,
                 trivial: isTrivial,
+                complexity,
                 upstreamResults: [...upstreamResults],
                 agentBrief: agentBriefs[stage.agent] ?? null,
               };

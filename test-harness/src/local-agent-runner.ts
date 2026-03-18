@@ -75,6 +75,11 @@ export interface AgentRunConfig {
   agentBrief?: string | null;
   /** When true, design agents write to .pipeline/<agentType>-design.md instead of DESIGN.md */
   parallelDesign?: boolean;
+  /** Task complexity from BigBoss ("trivial" | "moderate" | "complex") */
+  complexity?: "trivial" | "moderate" | "complex";
+  /** When set, this is a sub-task prompt within a decomposed coding run */
+  subTaskIndex?: number;
+  subTaskTotal?: number;
 }
 
 export interface TokenUsage {
@@ -250,30 +255,42 @@ You are running as a local CLI agent with full file-system access.
 Your role in this pipeline is IMPLEMENTATION -- you receive a design document
 and must build it.
 
-The DESIGN.md content has been provided in your context below, along with the
-workspace file tree and upstream agent handoffs. You do NOT need to read
-DESIGN.md from disk -- it is already included in your prompt.
+A PREVIEW of DESIGN.md is included below for quick orientation. However, the
+preview may be truncated. Use your filesystem tool to READ the full DESIGN.md
+from the workspace root before you start implementing. The full document on
+disk is the authoritative source.
 
-DESIGN.md may begin with an "Original task (source of truth)" section: that is
+DESIGN.md begins with an "Original task (source of truth)" section: that is
 the user's full requirement list. If the rest of DESIGN.md omits a requirement
 from the Original task (e.g. top-down view, character selection, split screen),
 you MUST implement it from the Original task and note the addition in CODING_NOTES.md.
 
+Upstream agent handoff files are in .pipeline/*.handoff.md -- read them with
+your filesystem tool if you need additional context from prior stages.
+
 Your job:
-1. Review the DESIGN.md content provided below (including any Original task section).
-2. Implement the full application as specified in the design and the Original task.
-3. Use your file-write tools to create every file on disk.
-4. Use your shell tool to run setup commands (npm init, install deps, etc.).
-5. Create a complete, working implementation -- not a description of one.
-6. Follow the file structure and patterns from the design document.
-7. When you are done, every file should exist on disk in the workspace.
-8. If you encounter issues with the design (contradictions, infeasible approaches,
+1. READ the full DESIGN.md from disk using your filesystem tool.
+2. Read the "Original task" section carefully, sentence by sentence.
+3. Implement the full application as specified in the design and the Original task.
+4. Use your file-write tools to create every file on disk.
+5. Use your shell tool to run setup commands (npm init, install deps, etc.).
+6. Create a complete, working implementation -- not a description of one.
+7. Follow the file structure and patterns from the design document.
+8. When you are done, every file should exist on disk in the workspace.
+9. If you encounter issues with the design (contradictions, infeasible approaches,
    missing specifications, or areas where you deviated), document them in a file
    called CODING_NOTES.md in the workspace root. Structure it with these sections:
    ## Deviations   (where you diverged from the design and why)
    ## Issues Found  (problems in the design that should be flagged)
    ## Suggestions   (improvements for future design iterations)
    Only create this file if you actually have notes to record.
+
+BEFORE YOU FINISH -- self-verification checklist:
+- Re-read the "Original task" section from DESIGN.md and tick off every requirement.
+- For each file you created, verify it has no syntax errors.
+- For Lua/LÖVE projects: verify main.lua has love.load, love.update, and love.draw callbacks.
+- For Node/web projects: verify the project builds (npm run build or equivalent).
+- If you find any missing requirements, implement them before finishing.
 
 DO NOT skip files or leave stubs. Build the complete implementation.
 `.trim();
@@ -283,12 +300,12 @@ You are running as a local CLI agent with full file-system access.
 Your role in this pipeline is TESTING -- you receive implemented code and
 must validate it.
 
-You have been provided with DESIGN.md content, the workspace file tree,
-upstream agent handoffs, existing test patterns (if any), and available npm
-scripts. Use this context to write comprehensive tests.
+A preview of DESIGN.md and upstream context is included below for orientation.
+For the full design, READ DESIGN.md from the workspace root using your
+filesystem tool. Upstream handoff files are in .pipeline/*.handoff.md.
 
 Your job:
-1. Review the DESIGN.md and upstream handoff content provided below.
+1. Read the full DESIGN.md from disk to understand what was designed.
 2. Examine the source files in the workspace to understand what was built.
 3. Create test files using an appropriate testing framework.
 4. Use your shell tool to install test dependencies and run the tests.
@@ -346,15 +363,17 @@ user task and design document to identify drift or missing features.
 
 Your job:
 1. Read DESIGN.md in full from the workspace using your filesystem tool.
-2. Read the key source files (e.g. main.lua, conf.lua, files in src/) to
-   understand what was actually implemented.
+2. Read ALL source files in the workspace (not just the file tree -- actually
+   open and read the contents of main.lua, conf.lua, every file in src/, etc.).
+   You must verify what was actually implemented, not assume from filenames.
 3. The "Original task (source of truth)" section in DESIGN.md contains the
    user's full requirement list. Verify each requirement is implemented in code.
 4. For games: check that love.load/love.update/love.draw exist and contain
    the expected logic, that scenes listed in the design have corresponding files,
    that input handling covers keyboard + gamepad, and that stated features
    (character selection, split-screen, specific game modes, etc.) are present.
-5. Respond with ONLY a JSON object on a single line:
+5. Read CODING_NOTES.md if it exists to understand any deviations the coder made.
+6. Respond with ONLY a JSON object on a single line:
    { "fit": "ok" | "drift", "missingOrWrong": ["item1", ...], "suggestedSubTask": { "prompt": "instructions" } }
    If fit is "ok", missingOrWrong and suggestedSubTask are optional.
    If fit is "drift", list every missing or incorrectly implemented feature,
@@ -382,7 +401,7 @@ function getPreamble(category: string, parallelDesign?: boolean): string {
 
 const SKIP_DIRS = new Set([".cursor", ".pipeline", ".git", "node_modules", ".next", "dist", "build", "__pycache__", ".venv"]);
 const PROJECT_FILES = ["package.json", "README.md", "Cargo.toml", "go.mod", "pyproject.toml", "requirements.txt", "tsconfig.json"];
-const ARCH_EXTENSIONS = new Set([".ts", ".js", ".tsx", ".jsx", ".py", ".go", ".rs", ".java", ".cs"]);
+const ARCH_EXTENSIONS = new Set([".ts", ".js", ".tsx", ".jsx", ".py", ".go", ".rs", ".java", ".cs", ".lua"]);
 
 function listSourceFiles(workDir: string): string[] {
   try {
@@ -487,7 +506,7 @@ function getProjectFiles(workDir: string, maxPerFile = 2000): string | null {
 
 function getArchitecturalFiles(workDir: string, maxTotal = 10000): string | null {
   const files = listSourceFiles(workDir);
-  const entryPatterns = [/index\.[tj]sx?$/, /main\.[tj]sx?$/, /app\.[tj]sx?$/, /server\.[tj]sx?$/, /^src\/[^/]+\.[tj]sx?$/];
+  const entryPatterns = [/index\.[tj]sx?$/, /main\.[tj]sx?$/, /main\.lua$/, /conf\.lua$/, /app\.[tj]sx?$/, /server\.[tj]sx?$/, /^src\/[^/]+\.[tj]sx?$/, /^src\/[^/]+\.lua$/];
   const typePatterns = [/types?\.[tj]s$/, /interfaces?\.[tj]s$/, /models?\.[tj]s$/, /schema\.[tj]s$/];
 
   const candidates = files.filter((f) => {
@@ -707,22 +726,45 @@ function buildFullPrompt(
     parts.push("");
   }
 
+  const useDiskBasedContext = config.category === "coding" || config.category === "validation";
+
   if (brief.designDoc) {
-    parts.push("## DESIGN.md");
-    parts.push("The design document for this task (produced by the Design agent):");
-    parts.push("```markdown");
-    parts.push(brief.designDoc);
-    parts.push("```");
+    if (useDiskBasedContext) {
+      const preview = brief.designDoc.slice(0, 3000);
+      const truncated = brief.designDoc.length > 3000;
+      parts.push("## DESIGN.md (preview)");
+      parts.push("This is a PREVIEW of the design document. Read the full DESIGN.md from disk for complete details.");
+      parts.push("```markdown");
+      parts.push(preview);
+      if (truncated) parts.push("\n... (truncated -- read full DESIGN.md from disk using your filesystem tool)");
+      parts.push("```");
+    } else {
+      parts.push("## DESIGN.md");
+      parts.push("The design document for this task (produced by the Design agent):");
+      parts.push("```markdown");
+      parts.push(brief.designDoc);
+      parts.push("```");
+    }
     parts.push("");
   }
 
   if (Object.keys(brief.handoffContent).length > 0) {
-    parts.push("## Upstream Agent Handoffs");
-    for (const [agent, content] of Object.entries(brief.handoffContent)) {
-      parts.push(`### ${agent} handoff`);
-      parts.push(content);
-      parts.push("");
+    if (useDiskBasedContext) {
+      parts.push("## Upstream Agent Handoffs");
+      parts.push("Handoff files from upstream agents are available on disk:");
+      for (const agent of Object.keys(brief.handoffContent)) {
+        parts.push(`- .pipeline/${agent}.handoff.md`);
+      }
+      parts.push("Read them with your filesystem tool if you need additional context.");
+    } else {
+      parts.push("## Upstream Agent Handoffs");
+      for (const [agent, content] of Object.entries(brief.handoffContent)) {
+        parts.push(`### ${agent} handoff`);
+        parts.push(content);
+        parts.push("");
+      }
     }
+    parts.push("");
   }
 
   if (brief.testPatterns) {
@@ -734,6 +776,38 @@ function buildFullPrompt(
   if (brief.packageScripts) {
     parts.push("## Available npm Scripts");
     parts.push(brief.packageScripts);
+    parts.push("");
+  }
+
+  // --- Complexity-aware guidance (R6) ---
+  if (config.complexity && config.category === "coding") {
+    parts.push("## Task Complexity");
+    switch (config.complexity) {
+      case "trivial":
+        parts.push("This is a TRIVIAL task. Implement straightforwardly without over-engineering.");
+        break;
+      case "moderate":
+        parts.push("This is a MODERATE task. Follow the design carefully and implement all features.");
+        break;
+      case "complex":
+        parts.push("This is a COMPLEX task with many interconnected requirements.");
+        parts.push("Take extra care to:");
+        parts.push("- Read the full DESIGN.md from disk multiple times as you work.");
+        parts.push("- Implement incrementally: core structure first, then features one by one.");
+        parts.push("- After implementing each major feature, re-read the Original task to verify nothing was missed.");
+        parts.push("- Pay special attention to cross-cutting concerns (input handling, state management, UI layout).");
+        break;
+    }
+    parts.push("");
+  }
+
+  // --- Sub-task context (R2: task decomposition) ---
+  if (config.subTaskIndex !== undefined && config.subTaskTotal !== undefined) {
+    parts.push("## Sub-Task Progress");
+    parts.push(`This is sub-task ${config.subTaskIndex + 1} of ${config.subTaskTotal}.`);
+    parts.push("Previous sub-tasks have already created files in the workspace.");
+    parts.push("Do NOT delete or overwrite existing files unless specifically instructed.");
+    parts.push("Build upon and extend the existing code.");
     parts.push("");
   }
 
