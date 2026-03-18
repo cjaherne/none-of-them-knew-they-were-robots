@@ -282,7 +282,7 @@ Structured logging and task history are persisted in SQLite (`test-harness/data/
 
 #### Event log improvements
 
-While agents run, the event log shows real-time progress: elapsed time and files edited. Stage logs (design, coding, testing, release) are nested in collapsible blocks that auto-expand while a stage is active and auto-collapse when it completes with a summary. Click a stage header to toggle it open or closed.
+While agents run, the event log shows real-time progress: elapsed time and files edited. When multiple design agents run in parallel, each stage has its own running indicator and progress (time and file count) so all are visible concurrently. Stage logs (design, coding, testing, release) are nested in collapsible blocks that auto-expand while a stage is active and auto-collapse when it completes with a summary. Click a stage header to toggle it open or closed.
 
 ### Voice command (cloud)
 
