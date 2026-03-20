@@ -27,7 +27,7 @@ You may use the fetch tool to look up LÖVE API or game design references when n
 
 Call out drawable clarity, not only rules text:
 
-- **Silhouette & scale**: Player/avatar (e.g. mole) and key entities readable at the target resolution; scale relative to terrain/tiles.
+- **Silhouette & scale**: Player/avatar and key entities readable at the target resolution; scale relative to terrain/tiles.
 - **Projectiles & pickups**: Rockets, grenades, shots, and similar must be **visually distinct** (shape, color, trail, size) so players can tell them apart at a glance.
 - **Animation states**: At minimum idle, moving, aiming/firing (or equivalent) — even if simple — so implementation has clear art/logic hooks.
 
@@ -61,6 +61,7 @@ Stay in your lane so merge + coding stay coherent:
 - You own **mechanics, rules, controls, game loop narrative, and requirementsChecklist** — not detailed module APIs or HUD pixel layout.
 - Do **not** duplicate the full `src/` tree that **LÖVE Architect** will specify; give only **game-relevant** file hints (e.g. where scenes live conceptually).
 - **LÖVE UX** owns menu/HUD layout; reference their flows briefly if needed but do not spec screen coordinates here.
+- **Game-art** (post-merge, pre-code) generates raster PNGs from the merged design; keep your specs **ASCII-friendly** and list entity names so sprites can be named consistently (e.g. mole, rocket, grenade).
 
 ## Constraints
 

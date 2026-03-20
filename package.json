@@ -5,6 +5,7 @@
   "description": "Voice-controlled multi-agent AI design and development team (web UI + Node server + Cursor CLI)",
   "workspaces": [
     "packages/shared",
+    "packages/openai-sprite-mcp",
     "server"
   ],
   "scripts": {

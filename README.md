@@ -10,7 +10,7 @@ A voice-controlled multi-agent AI design and development team: a **web UI**, a *
 
 **Version 2.3** — **LÖVE-focused agents** (`love-architect`, `love-ux`, `love-testing`) and separate web vs LÖVE pipeline stages; web designer/testing prompts no longer cover Lua games. BigBoss can set `stack: "love"` for LÖVE tasks. Overseer supports **per-designer** `gapsByAgent`, LÖVE-specific review checklists, and a bounded **love-testing → lua-coding** retry when validation fails.
 
-**Version 2.4** — **Requirements traceability**: `REQUIREMENTS.md` is generated from each task prompt and linked into `DESIGN.md` after merge; coders see a preview in their prompt. Optional **requirements approval** in the web UI (sidebar) pauses the pipeline for human review before design. **LÖVE complex tasks** use stack-aware **sub-task decomposition** (locomotion and core gameplay before polish). Overseer **code review** explicitly checks **persistent scores** vs RAM-only drift. Optional **`LOVE_SMOKE_CHECKLIST=1`** runs a post-coding JSON smoke hint (movement / persistence). Skill packs updated for in-world visuals, locomotion-first input, and love-testing smoke notes.
+**Version 2.4** — **Game-art (LÖVE)**: optional post-design stage generates PNG sprites via OpenAI **DALL-E 3** (`packages/openai-sprite-mcp`) when `OPENAI_API_KEY` is set; injects before `lua-coding`. **Requirements traceability**: `REQUIREMENTS.md` is generated from each task prompt and linked into `DESIGN.md` after merge; coders see a preview in their prompt. Optional **requirements approval** in the web UI (sidebar) pauses the pipeline for human review before design. **LÖVE complex tasks** use stack-aware **sub-task decomposition** (locomotion and core gameplay before polish). Overseer **code review** explicitly checks **persistent scores** vs RAM-only drift. Optional **`LOVE_SMOKE_CHECKLIST=1`** runs a post-coding JSON smoke hint (movement / persistence). Skill packs updated for in-world visuals, locomotion-first input, and love-testing smoke notes.
 
 ## Overview
 
@@ -26,6 +26,7 @@ Speak or type a task, and specialist agents — designers, coders, testers — c
 | **Design** | Graphics Designer | Visual tokens, CSS, web UI | Filesystem, Fetch |
 | **Design** | Game Designer | Mechanics, controls, LÖVE game structure | Filesystem, Fetch, Sequential Thinking |
 | **Design** | LÖVE Architect / LÖVE UX | Lua modules, scenes/HUD (LÖVE games) | Filesystem, Fetch (Architect also GitHub) |
+| **Design** | **Game Art** | Post-design PNG sprites via **DALL-E 3** (MCP `generate_sprite`); **ASSETS.md** — runs only for LÖVE when `OPENAI_API_KEY` is set | Filesystem, Fetch, **openai-sprite-mcp** |
 | **Coding** | Coding / Lua coding | Web vs LÖVE implementation | Filesystem, GitHub, Fetch |
 | **Validation** | Testing / LÖVE testing | Web tests vs busted / `love .` smoke | Filesystem, Playwright, Fetch |
 | **Release** | Release Agent | Same workflow as **merge-to-main**: README, SemVer, push, **build**, PR, **squash-merge**, tag on `main` | Filesystem, GitHub |
@@ -98,9 +99,10 @@ flowchart TD
   OD -->|gaps| D
   OD -->|ok| DA{Design approval enabled?}
   DA -->|yes| H2[Human: approve / revise design]
-  DA -->|no| C[Coding + optional sub-tasks]
-  H2 -->|approve| C
+  DA -->|no| GArt[game-art DALL-E 3 if LÖVE]
+  H2 -->|approve| GArt
   H2 -->|revise| D
+  GArt --> C[Coding + optional sub-tasks]
   C --> V[Lint / optional love runtime verify]
   V --> OC[Overseer code review + drift fix-ups]
   OC --> SK{LOVE_SMOKE_CHECKLIST=1 and LÖVE stack?}
@@ -154,6 +156,7 @@ Skill packs are read from `skills/` on disk (`SKILLS_ROOT` overrides the path).
 ├── server/                 Node server (Express, SQLite, orchestration)
 ├── web/                    Browser UI (HTML/JS/CSS; served by server)
 ├── packages/shared/        Shared types, logging, safety helpers
+├── packages/openai-sprite-mcp/  Stdio MCP: DALL-E 3 → PNG (game-art agent)
 └── skills/                 Agent skill packs + registry.yaml
 ```
 
@@ -220,7 +223,8 @@ The `web/` package has a simple `npm run dev` (static serve) if you want to iter
 
 | Variable | Purpose | Required |
 |----------|---------|----------|
-| `OPENAI_API_KEY` | Routing, Whisper, summaries, merge/overseer fallbacks | Optional |
+| `OPENAI_API_KEY` | Routing, Whisper, summaries, merge/overseer fallbacks, **game-art** DALL-E 3 | Optional |
+| `OPENAI_IMAGE_MODEL` | Image model for game-art MCP (default `dall-e-3`) | Optional |
 | `PORT` | Listen port (default `3000`) | Optional |
 | `SKILLS_ROOT` | Override skills directory | Optional |
 | `CURSOR_CLI` | Override Cursor agent binary | Optional |
