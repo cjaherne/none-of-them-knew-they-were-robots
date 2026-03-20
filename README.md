@@ -6,6 +6,8 @@ A voice-controlled multi-agent AI design and development team: a **web UI**, a *
 
 **Version 2.1** — Repository layout was renamed for clarity: the Node backend is **`server/`** (package `@agents/server`), and the browser assets live in **`web/`** at the repo root. Scripts or docs that still reference `test-harness/` or `client/web/` should be updated.
 
+**Version 2.2** — BigBoss planning and Overseer calls are centralised in [`server/src/bigboss-director.ts`](server/src/bigboss-director.ts) with shared stage definitions in [`server/src/pipeline-stages.ts`](server/src/pipeline-stages.ts). Optional **Cursor chat continuity** uses `agent create-chat` plus `--resume` per pipeline (`CURSOR_AGENT_SESSIONS`: `off`, `bigboss`, or `all`; see [`server/.env.local.example`](server/.env.local.example)). The example env file also documents **`CURSOR_AGENT_MODEL`** slugs (run `agent models` for your account).
+
 ## Overview
 
 Speak or type a task, and specialist agents — designers, coders, testers — collaborate via Cursor CLI to complete it. New agent types are added mostly through **skill packs** under `skills/`, not by changing the server core.
