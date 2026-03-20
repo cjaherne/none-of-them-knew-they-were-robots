@@ -35,7 +35,7 @@ Execute these steps in order. Stop and report to the user if any step fails.
 
 1. Read `package.json` and note the current `version` field.
 2. Determine the appropriate semver bump by analysing the branch's commits:
-   - **major** -- breaking changes to APIs, CRDs, config formats, or CLI flags
+   - **major** -- breaking changes to APIs, config formats, or CLI flags
    - **minor** -- new features, new agent types, new endpoints, new scripts
    - **patch** -- bug fixes, documentation-only changes, refactors with no API change
 3. Compute the new version string.
@@ -62,10 +62,6 @@ Use conventional commit format. The type should reflect the dominant change cate
    npm run build
    ```
 3. If the build fails, fix the errors, commit the fix, push again, and re-run the build. Do not proceed until the build passes.
-4. For the Go operator, also validate:
-   ```
-   cd operator && go build ./... && cd ..
-   ```
 
 ### Step 6: Create the Pull Request
 
@@ -86,7 +82,6 @@ Create a PR using `gh pr create` with:
 
 ## Test plan
 - [ ] `npm run build` passes
-- [ ] `cd operator && go build ./...` passes
 - [ ] Key changes reviewed: <list the most important files>
 ```
 

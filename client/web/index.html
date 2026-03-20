@@ -1279,25 +1279,9 @@
 
       <!-- Backend config -->
       <div class="config-group backend-config">
-        <div class="sidebar-section-title">Backend</div>
-
-        <label for="backendSelect">Mode</label>
-        <select id="backendSelect">
-          <option value="local">Local Test Harness</option>
-          <option value="cloud">AWS Cloud</option>
-        </select>
-
-        <div id="localUrlGroup">
-          <label for="localUrl">API URL</label>
-          <input type="text" id="localUrl" placeholder="http://localhost:3000" />
-        </div>
-
-        <div id="cloudUrlGroup" style="display:none;">
-          <label for="cloudRestUrl">REST URL</label>
-          <input type="text" id="cloudRestUrl" placeholder="https://xxx.execute-api.region.amazonaws.com/dev" />
-          <label for="cloudWsUrl" style="margin-top:0.5rem;">WebSocket URL</label>
-          <input type="text" id="cloudWsUrl" placeholder="wss://xxx.execute-api.region.amazonaws.com/dev" />
-        </div>
+        <div class="sidebar-section-title">Test harness</div>
+        <label for="localUrl">API URL</label>
+        <input type="text" id="localUrl" placeholder="http://localhost:3000" />
       </div>
 
       <!-- Logging config -->

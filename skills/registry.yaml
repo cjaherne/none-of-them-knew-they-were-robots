@@ -1,3 +1,4 @@
+# Agent registry for the local test harness. Optional `resources` entries are unused metadata (historical).
 categories:
   - name: analysis
     order: 1
