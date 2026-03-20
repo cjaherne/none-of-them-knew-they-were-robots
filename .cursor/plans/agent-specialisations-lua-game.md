@@ -1,158 +1,137 @@
-# Agent specialisations — Lua / LÖVE game workflows
+# Agent specialisations — Lua / LÖVE vs Web pipelines
 
 **Branch:** `agent-specialisations`  
-**Scope:** Improve specialist agents when the pipeline builds or updates a **Lua-based game** (primary target: **LÖVE 11.x**).  
+**Scope:** Split **game (LÖVE/Lua)** and **web app / web UI** so they use **disjoint** specialist sets. Implement **Option A only:** new LÖVE skill packs; **strip all Lua/LÖVE language** from agents that remain on **web-only** pipelines.  
 **Status:** Planning only — execute in follow-up PRs after review.
 
 ---
 
-## 1. Current agent lineup (Lua game path)
+## 1. Strategy (locked): Option A — new skill packs
 
-When BigBoss routes a **complex game** task, the design stage typically runs **in parallel**:
+Add **three** new registry entries and skill packs (names are canonical; aliases in parentheses):
 
-| Agent | Skill pack | Intended focus | Risk today |
-|-------|------------|------------------|------------|
-| **game-designer** | `game-designer` | Mechanics, controls, loop, LÖVE file layout, checklists | Well-scoped for LÖVE |
-| **core-code-designer** | `core-code-designer` | “General” architecture + JSON sections + **Game / Lua** bolt-on | **Overlaps** game-designer (module tree, state machines, input layers) |
-| **graphics-designer** | `graphics-designer` | Visual tokens, art briefs | Often fine; may blur with UX for in-game HUD |
-| **ux-designer** | `ux-designer` | Flows, wireframes, a11y, **game UI** | **Very broad** vs game menus vs product-style UX |
-| **lua-coding** | `lua-coding` | Full LÖVE implementation | Correct single owner for code; still absorbs *all* code concerns |
-| **testing** | `testing` | Jest/Vitest/pytest **and** busted/Lua | **Jack of all trades** — weak default depth for LÖVE-specific verification |
-| **bigboss** | `bigboss` | Plan, overseer, merge context | Not a “specialist” in the same sense |
+| New `type` / skillPack | Role |
+|------------------------|------|
+| **`love-architect`** | LÖVE/Lua **software** architecture: module graph, `require` direction, scene stack/registry, update/draw order, `src/systems/` vs entities, `conf.lua` / window strategy, error-handling patterns. **No** game mechanics prose, **no** REST/React. |
+| **`love-ux`** (alias: **`game-ui-designer`**) | **In-game** UX: screen map (title → play → pause → game over), controller-friendly navigation, HUD layout *as spec*, focus order, game a11y (readable UI scale). **No** marketing sites, **no** web IA. |
+| **`love-testing`** (alias: **`lua-testing`**) | LÖVE/Lua QA: **busted** / `luac -p`, pure Lua module tests, smoke `love .`, what to automate in CI for a Lua repo. **No** Jest/Vitest/pytest as primary path. |
 
-**Coding stage:** `lua-coding` (not generic `coding`) when BigBoss selects it — already specialised at the *pipeline* level.
+**Keep** existing agents **only** for **non-game / web** pipelines. Their prompts and rules must be **WebApp / WebUI only** — remove every LÖVE, Lua game, busted, and `love.*` API reference.
 
 ---
 
-## 2. Problem statement
+## 2. Web-only agents (mandate after rework)
 
-1. **Duplicate design authority:** `game-designer` and `core-code-designer` both specify Lua module trees, state machines, and input — merge + overseer must reconcile, and specialists may contradict each other.
-2. **UX designer scope:** One agent covers marketing-site-style UX and in-game HUD, menus, character select, and accessibility — different artefacts and success criteria.
-3. **Testing agent scope:** One prompt spans web stacks and Lua/busted; for games, we want confident guidance on **pure logic tests**, **minimal LÖVE harness**, and **smoke `love .`** without pretending every project is npm.
-4. **Graphics vs gameplay:** Art direction / sprite specs sometimes collide with mechanics (e.g. camera, resolution, parallax) owned by game-designer.
+These agents **must not** implement or prescribe Lua/LÖVE game content. Scope = **web applications and web UI** (SPAs, SSR, REST/GraphQL backends the server describes as HTTP services, design systems for browsers, component libraries, Playwright-style flows for **sites**, etc.).
 
-**Goal:** Narrow each agent’s **mandate** and **outputs** so parallel design produces **complementary** documents with fewer merge conflicts and clearer handoff to `lua-coding`.
+| Agent | After rework |
+|-------|----------------|
+| **`core-code-designer`** | System design for **web stacks**: services, REST/GraphQL/WebSocket contracts, JS/TS monorepo layout, React/Vue/Svelte boundaries, env/config — **delete** entire “Game / Lua Expertise” and LÖVE file-tree sections from [`skills/core-code-designer/system-prompt.md`](skills/core-code-designer/system-prompt.md) (and aligned rules). |
+| **`ux-designer`** | User flows, wireframes, a11y for **web** products only — **delete** game menus, HUD, character select, controller navigation as in-scope examples. |
+| **`graphics-designer`** | Brand/visual design for **web**: tokens, typography, marketing imagery — **delete** sprite sheets, `assets/` game folders, virtual resolution for games. |
+| **`testing`** | **Web/backend** testing: Jest, Vitest, Playwright for web, pytest where relevant — **delete** busted, luaunit, LÖVE smoke as primary guidance (defer entirely to `love-testing`). |
+
+**`coding`** (generic) stays web/general implementation; **`lua-coding`** remains the **only** coding agent for LÖVE game implementation.
 
 ---
 
-## 3. Target architecture (conceptual)
+## 3. LÖVE game pipeline — specialist set
+
+When BigBoss selects a **LÖVE / Lua game** task (today: `lua-coding` in the plan, parallel design with multiple designers):
+
+**Design (parallel):**
+
+| Agent | Pack | Responsibility |
+|-------|------|----------------|
+| **`game-designer`** | `game-designer` | Mechanics, rules, controls, `gameLoop`, `requirementsChecklist`, LÖVE-oriented **high-level** file *names*; **in-game** art/asset conventions at design level (folder naming, style intent) so there is no gap after web `graphics-designer` is stripped of games. |
+| **`love-architect`** | `love-architect` | Deep Lua module architecture, dependency direction, scenes, systems — **single owner** for what used to overlap with core-code-designer. |
+| **`love-ux`** | `love-ux` | Screens, flows, HUD *structure*, input for UI focus — **single owner** for what used to sit on ux-designer for games. |
+| **`graphics-designer`** | **not used** in default LÖVE parallel group | Optional later: fourth pack **`love-graphics-designer`** if art briefs need a dedicated agent; otherwise `game-designer` + `love-ux` carry visual/HUD spec. |
+
+**Coding:** `lua-coding`  
+**Validation:** `love-testing` (not `testing`)
 
 ```mermaid
 flowchart TB
-  subgraph designParallel [Design parallel - LÖVE game]
-    GD[game-designer mechanics loop controls checklist]
-    AD[love-architect NEW optional rename core-code]
-    VD[graphics-designer art audio brief]
-    UX[ux-game-ui NEW or narrowed ux-designer]
+  subgraph webPipeline [Web / WebUI pipeline]
+    CCD[core-code-designer]
+    UXW[ux-designer]
+    GFXW[graphics-designer]
+    COD[coding]
+    TST[testing]
   end
-  GD --> MERGE[Merge to DESIGN.md]
-  AD --> MERGE
-  VD --> MERGE
-  UX --> MERGE
-  MERGE --> LUA[lua-coding]
-  LUA --> TEST[love-testing NEW or narrowed testing]
+  subgraph lovePipeline [LÖVE game pipeline]
+    GD[game-designer]
+    LA[love-architect]
+    LU[love-ux]
+    LC[lua-coding]
+    LT[love-testing]
+  end
+  webPipeline --> MergeW[DESIGN.md merge]
+  lovePipeline --> MergeL[DESIGN.md merge]
 ```
 
-Two implementation strategies:
+---
 
-- **A — New skill packs (cleanest):** Add `love-architect`, `love-ux` (or `game-ui-designer`), `love-testing` (or `lua-testing`); keep old agents for non-game pipelines.
-- **B — Prompt-only split (lighter):** Keep registry types but add **task-class hints** in prompts (e.g. “you are in GAME_MODE — only produce X”); BigBoss injects different preamble. Less registry churn, weaker enforcement.
+## 4. BigBoss and registry wiring
 
-**Recommendation:** **Hybrid** — (1) tighten existing prompts for game tasks; (2) add **one** new specialist where overlap hurts most (**love-architect** or rename narrow **core-code-designer** for games only); (3) split testing into **lua-game-testing** when `lua-coding` is on the path.
+- **`BIGBOSS_CONTEXT_BROKER_PROMPT`** ([`bigboss-director.ts`](server/src/bigboss-director.ts)):  
+  - **Web tasks:** allowed design agents = `ux-designer`, `core-code-designer`, `graphics-designer`; coding = `coding`; validation = `testing`.  
+  - **Game / LÖVE tasks:** allowed design agents = `game-designer`, `love-architect`, `love-ux` (no `ux-designer` / `core-code-designer` / `graphics-designer` in the parallel game bundle); coding = `lua-coding`; validation = `love-testing`.
+
+- **`AGENT_TYPE_TO_DEF`** + **`PARALLEL_DESIGNERS`** ([`pipeline-stages.ts`](server/src/pipeline-stages.ts)):  
+  - Introduce **`PARALLEL_LOVE_DESIGNERS`** (or equivalent) listing `game-designer`, `love-architect`, `love-ux`.  
+  - **`getAvailableParallelDesigners()`** (or caller) chooses **web list vs love list** based on pipeline mode / BigBoss outcome (e.g. when final coding stage is `lua-coding` or complexity + game signals).
+
+- **`skills/registry.yaml`:** register `love-architect`, `love-ux`, `love-testing` with same category/order pattern as existing designers / validation.
 
 ---
 
-## 4. Proposed specialisations (Lua game)
+## 5. Skill pack deliverables (new)
 
-### 4.1 Game designer (`game-designer`) — *tighten, don’t duplicate*
+Each new pack needs at minimum: `system-prompt.md`, `constraints.json`, `cursor-rules.md`, registered in `registry.yaml`, directory under `skills/<pack>/`.
 
-- **Owns:** `requirementsChecklist`, mechanics, controls, `gameLoop`, high-level `fileStructure` *names* (not full dependency graph).
-- **Explicit non-goals:** Deep module dependency rules, REST/data models, web architecture — defer to architect agent.
-- **Deliverable:** Keep `.pipeline/game-designer-design.md`; ensure merge template prefers game-designer for checklist authority.
-
-### 4.2 Core code designer → **LÖVE software architect** (new or forked pack)
-
-- **Option A:** New agent `love-architect` / skill `love-architect`:
-  - **Owns:** Module graph, `require` direction, scene registry/scene stack, ECS-lite vs tables, update/draw order, where systems live (`src/systems/`), error handling patterns, conf/window strategy.
-  - **Does not own:** Mechanics copy, control binding tables (reference game-designer).
-- **Option B:** Keep `core-code-designer` but add `constraints.json` + prompt branch: when `parallelDesign` and `game-designer` present, **strip** game-mechanics sections and emit **only** `loveArchitecture` JSON.
-
-### 4.3 UX designer → **Game UI / flow designer** (split or mode)
-
-- **Owns:** Screen map (title → options → play → pause → game over), focus order, controller-friendly navigation, HUD layout *as spec* (not art), localisation hooks, readable fonts/sizes (a11y for games).
-- **Does not own:** Web app IA, REST flows, or generic “wireframes” unless task is hybrid.
-- **Implementation:** Either new `game-ui-designer` skill or a **flag** in BigBoss brief: `context.focus` forces game-UI scope (document in `bigboss-director` broker text).
-
-### 4.4 Graphics designer — *narrow for games*
-
-- **Owns:** Palette, typography *choice*, sprite sheet conventions, resolution/virtual resolution, particle/mood board, asset naming under `assets/`.
-- **Does not own:** Game rules, hitboxes (unless purely visual size class).
-
-### 4.5 Lua coding — *phase prompts*
-
-- **Phase 1 prompt (optional):** Scaffold only — `main.lua`, `conf.lua`, empty modules per architect diagram.
-- **Phase 2:** Gameplay fill — could be same agent (current) or future split `lua-scene-author` (only if pain appears).
-
-Defer **coder split** until metrics show benefit.
-
-### 4.6 Testing — **Lua game QA**
-
-- **Owns:** `busted` layout, pure function tests for `src/` logic, CI-friendly `luac -p`, optional headless/smoke notes; when to run `love .`.
-- **De-emphasise:** Jest/Vitest for pure Lua repos in default prompt when repo is LÖVE-first.
-- **Implementation:** New `lua-testing` agent **or** `testing` prompt with **LÖVE_FIRST** branch and stricter output schema (`luaTestFiles`, `loveSmokeSteps`).
+- **`love-architect`:** JSON or markdown sections for `loveArchitecture`, module DAG, scene lifecycle, conf/window; output path e.g. `.pipeline/love-architect-design.md` (align with orchestrator parallel-design pattern).
+- **`love-ux`:** Screen list, transitions, HUD regions, controller/keyboard focus; output `.pipeline/love-ux-design.md`.
+- **`love-testing`:** busted layout, spec file naming, `luac -p`, optional smoke checklist; may still output JSON for `testCommands` — **Lua-first** only.
 
 ---
 
-## 5. Code / config touchpoints
+## 6. Phased execution plan (revised)
 
-| Area | Files to update |
-|------|-----------------|
-| Registry | [`skills/registry.yaml`](skills/registry.yaml) — new `type` + `skillPack` entries |
-| Pipeline mapping | [`server/src/pipeline-stages.ts`](server/src/pipeline-stages.ts) — `AGENT_TYPE_TO_DEF`, `PARALLEL_DESIGNERS`, `FULL_STAGES` if defaults change |
-| BigBoss broker | [`server/src/bigboss-director.ts`](server/src/bigboss-director.ts) — `BIGBOSS_CONTEXT_BROKER_PROMPT` allowed types, game-task rules |
-| Parallel designers | [`getAvailableParallelDesigners`](server/src/pipeline-stages.ts) — order and membership |
-| Skill packs | `skills/<pack>/system-prompt.md`, `constraints.json`, `cursor-rules.md`, optional `tools.json` |
-| Docs | [`README.md`](README.md) agent table; [`server/.env.local.example`](server/.env.local.example) if any new env |
+| Phase | Deliverable |
+|-------|-------------|
+| **P0** | Document current BigBoss routing and one golden **web** + one golden **LÖVE** transcript (baseline). |
+| **P1** | **Strip** Lua/LÖVE/busted/game UI from `core-code-designer`, `ux-designer`, `graphics-designer`, `testing` prompts + rules — **web only**. |
+| **P2** | Add **`love-architect`**, **`love-ux`**, **`love-testing`** packs + `registry.yaml`. |
+| **P3** | Wire **`pipeline-stages`**, **`getAvailableParallelDesigners`** (or sibling), **`bigboss-director`** so LÖVE games use the love parallel set + `love-testing`; web games use web set + `testing`. |
+| **P4** | Merge / overseer prompts if needed so merged `DESIGN.md` sections map cleanly to new agent names; README agent table; optional **`love-graphics-designer`** if art briefs remain overloaded on `game-designer`. |
 
----
-
-## 6. Phased execution plan
-
-| Phase | Deliverable | Risk |
-|-------|-------------|------|
-| **P0** | Audit: diff outputs from real parallel run (merge conflicts, overseer gaps) | Low |
-| **P1** | Prompt-only boundaries: game-designer vs core-code-designer vs ux (no new agents) | Low |
-| **P2** | Add **one** new designer agent (`love-architect` or `game-ui-designer`) + registry + BigBoss strings | Medium |
-| **P3** | Specialise **testing** for LÖVE path (`lua-testing` or branched prompt) | Medium |
-| **P4** | Optional: second coding pass / sub-agent for polish only | Higher |
-
-After each phase: run a **golden task** (e.g. “small LÖVE pong” and “multi-scene menu game”) and compare `DESIGN.md` section overlap and overseer iteration count.
+**Removed from this plan:** Option B (prompt-only split), “hybrid” recommendation, and phases that only tweaked overlaps without new packs.
 
 ---
 
 ## 7. Success metrics
 
-- Fewer overseer **gaps** / **drift** iterations on Lua game tasks.
-- Shorter merged `DESIGN.md` with **non-redundant** sections (measurable via duplicate heading count or manual rubric).
-- `lua-coding` reports fewer “contradiction” entries in `CODING_NOTES.md`.
-- Testing stage produces **runnable** busted/luac instructions on LÖVE samples without web stack noise.
+- Web pipeline: no LÖVE/Lua/busted language in specialist outputs for a **Next/React**-style task.
+- LÖVE pipeline: parallel design includes **only** `game-designer`, `love-architect`, `love-ux` (plus optional future `love-graphics-designer`); validation stage runs **`love-testing`**.
+- Fewer merge conflicts between former “core code” and “game design” sections; overseer sees clear ownership.
 
 ---
 
-## 8. Out of scope (for this plan)
+## 8. Out of scope
 
-- Non-game pipelines (web-only) — keep existing `coding` + `ux-designer` + `core-code-designer` behaviour unless explicitly unified later.
-- Replacing BigBoss with a single mega-agent (separate product decision).
-- CI wiring for `busted` in template repos (optional follow-up).
+- Changing **BigBoss** into a single combined overseer/orchestrator agent.
+- **Generic `coding`** agent behaviour for non-web stacks (CLI tools, etc.) — treat as follow-up if needed.
 
 ---
 
 ## 9. Open questions
 
-1. Should **new** agents appear in the UI agent list and voice intent parsing, or stay pipeline-internal only?
-2. Prefer **more agents in parallel** (latency) vs **sequential design substages** (game → architect → UI) for very large games?
-3. Should `graphics-designer` be optional for tiny jam games to save tokens?
+1. **Detection:** Is **`lua-coding` in the planned stages** sufficient to switch parallel designers to the LÖVE set, or do we need an explicit BigBoss flag (e.g. `stack: "love"`)?  
+2. **Graphics gap:** Accept **game-designer** carrying art/asset convention until `love-graphics-designer` exists?  
+3. Should **`love-ux`** display name be **“LÖVE Game UI Designer”** in the UI to avoid confusion with **`ux-designer`**?
 
 ---
 
-*Prepared on branch `agent-specialisations` for review before implementation.*
+*Updated plan: Option A only; web agents are WebApp/WebUI-only; LÖVE uses `love-architect`, `love-ux`, `love-testing` plus existing `game-designer` and `lua-coding`.*
