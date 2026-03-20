@@ -2,6 +2,8 @@
 
 A voice-controlled multi-agent AI design and development team that runs **locally** via the test harness and **Cursor Agent CLI** (`agent`).
 
+**Version 2.0 (major)** — AWS CDK, Kubernetes/Helm, the Go operator, and container-based agent runtime have been **removed** from this repo. The supported stack is the local test harness and browser UI only. If you depended on in-tree cloud deployment from the 1.x line, stay on the latest **1.x** tag (e.g. **v1.4.3**) or maintain a fork.
+
 ## Overview
 
 Speak or type a task, and a team of specialist AI agents — designers, coders, testers — collaborate via Cursor CLI headless to complete it. The system is built on an extensible framework: adding a new agent type is mostly configuration (skill packs under `skills/`), not new orchestration code.
