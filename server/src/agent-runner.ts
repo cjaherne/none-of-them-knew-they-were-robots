@@ -1,6 +1,6 @@
 import { spawn } from "child_process";
 import { execSync } from "child_process";
-import { promises as fs, access as accessCb } from "fs";
+import { promises as fs, access as accessCb, readFileSync } from "fs";
 import * as path from "path";
 import * as os from "os";
 import { createLogger } from "@agents/shared";
@@ -338,8 +338,9 @@ from the workspace root before you start implementing. The full document on
 disk is the authoritative source.
 
 DESIGN.md begins with an "Original task (source of truth)" section: that is
-the user's full requirement list. If the rest of DESIGN.md omits a requirement
-from the Original task (e.g. top-down view, character selection, split screen),
+the user's full requirement list. If REQUIREMENTS.md exists in the workspace root,
+read it and implement or explicitly defer each numbered item in CODING_NOTES.md.
+If the rest of DESIGN.md omits a requirement from the Original task (e.g. top-down view, character selection, split screen),
 you MUST implement it from the Original task and note the addition in CODING_NOTES.md.
 
 Upstream agent handoff files are in .pipeline/*.handoff.md -- read them with
@@ -347,14 +348,15 @@ your filesystem tool if you need additional context from prior stages.
 
 Your job:
 1. READ the full DESIGN.md from disk using your filesystem tool.
-2. Read the "Original task" section carefully, sentence by sentence.
-3. Implement the full application as specified in the design and the Original task.
-4. Use your file-write tools to create every file on disk.
-5. Use your shell tool to run setup commands (npm init, install deps, etc.).
-6. Create a complete, working implementation -- not a description of one.
-7. Follow the file structure and patterns from the design document.
-8. When you are done, every file should exist on disk in the workspace.
-9. If you encounter issues with the design (contradictions, infeasible approaches,
+2. If REQUIREMENTS.md exists, READ it and map every requirement id to implementation or documented deferral.
+3. Read the "Original task" section carefully, sentence by sentence.
+4. Implement the full application as specified in the design and the Original task.
+5. Use your file-write tools to create every file on disk.
+6. Use your shell tool to run setup commands (npm init, install deps, etc.).
+7. Create a complete, working implementation -- not a description of one.
+8. Follow the file structure and patterns from the design document.
+9. When you are done, every file should exist on disk in the workspace.
+10. If you encounter issues with the design (contradictions, infeasible approaches,
    missing specifications, or areas where you deviated), document them in a file
    called CODING_NOTES.md in the workspace root. Structure it with these sections:
    ## Deviations   (where you diverged from the design and why)
@@ -363,7 +365,7 @@ Your job:
    Only create this file if you actually have notes to record.
 
 BEFORE YOU FINISH -- self-verification checklist:
-- Re-read the "Original task" section from DESIGN.md and tick off every requirement.
+- Re-read REQUIREMENTS.md (if present) and the "Original task" section from DESIGN.md; tick off every requirement.
 - For each file you created, verify it has no syntax errors.
 - For Lua/LÖVE projects: verify main.lua has love.load, love.update, and love.draw callbacks.
 - For Node/web projects: verify the project builds (npm run build or equivalent).
@@ -470,11 +472,14 @@ Your job:
    that input handling covers keyboard + gamepad, and that stated features
    (character selection, split-screen, specific game modes, etc.) are present.
 5. Read CODING_NOTES.md if it exists to understand any deviations the coder made.
-6. Respond with ONLY a JSON object on a single line:
-   { "fit": "ok" | "drift", "missingOrWrong": ["item1", ...], "suggestedSubTask": { "prompt": "instructions" } }
-   If fit is "ok", missingOrWrong and suggestedSubTask are optional.
-   If fit is "drift", list every missing or incorrectly implemented feature,
-   and provide focused coder instructions in suggestedSubTask.prompt.
+6. Read REQUIREMENTS.md if it exists; cross-check persistence and gameplay items against code.
+7. **Scores / persistence:** If the user asked for scores or stats **across launches**, **sessions**, or **since installing** (not just the current run), the implementation must use durable storage (e.g. for LÖVE: love.filesystem). If scores are only in RAM/tables with no load/save, that is **drift** unless README or CODING_NOTES.md explicitly scopes persistence as session-only and matches the user ask.
+8. Respond with ONLY a JSON object on a single line:
+   { "fit": "ok" | "drift", "missingOrWrong": ["item1", ...],
+     "focusPaths": ["path/to/file.lua", ...] (optional — repo-relative paths to prioritise),
+     "suggestedSubTask": { "prompt": "instructions" } }
+   If fit is "ok", optional fields may be omitted.
+   If fit is "drift", list issues and provide focused coder instructions in suggestedSubTask.prompt.
 
 DO NOT modify any files. This is a read-only review.
 `.trim();
@@ -871,6 +876,26 @@ function buildFullPrompt(
       parts.push("```");
     }
     parts.push("");
+  }
+
+  if (config.category === "coding") {
+    try {
+      const reqPath = path.join(workDir, "REQUIREMENTS.md");
+      const req = readFileSync(reqPath, "utf-8");
+      if (req.trim()) {
+        parts.push("## REQUIREMENTS.md (preview)");
+        parts.push(
+          "Read the full REQUIREMENTS.md from disk. Implement each requirement id (R1, R2, …) or document deferral under **Deviations** in CODING_NOTES.md.",
+        );
+        parts.push("```markdown");
+        const cap = 6000;
+        parts.push(req.length > cap ? `${req.slice(0, cap)}\n\n... (truncated — read full file from disk)` : req);
+        parts.push("```");
+        parts.push("");
+      }
+    } catch {
+      /* no REQUIREMENTS.md */
+    }
   }
 
   if (Object.keys(brief.handoffContent).length > 0) {

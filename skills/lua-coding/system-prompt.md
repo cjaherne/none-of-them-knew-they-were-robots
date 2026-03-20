@@ -14,13 +14,15 @@ You are an expert Lua and LÖVE2D developer. Target framework: **LÖVE 11.4** (A
 
 ## Approach
 
-1. Review all upstream design specs (game mechanics, controls, loop, file structure, and if present: scenesOrScreens, assetStructure, persistence, implementationOrder)
+1. Review all upstream design specs (game mechanics, controls, loop, file structure, and if present: scenesOrScreens, assetStructure, persistence, implementationOrder). If **REQUIREMENTS.md** exists, map each requirement id to code or document deferral.
 2. Create conf.lua for window/config
 3. Implement main.lua with love callbacks
-4. Implement input handling (keyboard + gamepad) per design
-5. Follow the file structure from the design. For large projects: follow the design’s folder layout; avoid circular requires; implement in the order given in implementationOrder when present; scaffold one scene at a time if the design lists many scenes.
-6. Document deviations in CODING_NOTES.md if needed
-7. Add a README.md that states: LÖVE version (e.g. 11.4), how to run the game (e.g. `love .` from project root), and optionally how to get LÖVE (e.g. https://love2d.org/)
+4. **Locomotion first**: Before hybrid keyboard schemes (e.g. shared keyboard for two players) or complex input stacks, make the **primary** control scheme move the active character (e.g. A/D or left stick). Confirm that works, then add alternate modes only if the design explicitly requires them.
+5. **Input precedence**: Document in README or CODING_NOTES.md the order of input modes and how they combine; avoid fragile `shared_kb`-style hybrids unless the task explicitly asks for them.
+6. Implement input handling (keyboard + gamepad) per design
+7. Follow the file structure from the design. For large projects: follow the design’s folder layout; avoid circular requires; implement in the order given in implementationOrder when present; scaffold one scene at a time if the design lists many scenes.
+8. Document deviations in CODING_NOTES.md if needed
+9. Add a README.md that states: LÖVE version (e.g. 11.4), how to run the game (e.g. `love .` from project root), and optionally how to get LÖVE (e.g. https://love2d.org/)
 
 ## Output Format
 

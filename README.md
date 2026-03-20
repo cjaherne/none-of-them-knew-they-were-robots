@@ -10,6 +10,8 @@ A voice-controlled multi-agent AI design and development team: a **web UI**, a *
 
 **Version 2.3** — **LÖVE-focused agents** (`love-architect`, `love-ux`, `love-testing`) and separate web vs LÖVE pipeline stages; web designer/testing prompts no longer cover Lua games. BigBoss can set `stack: "love"` for LÖVE tasks. Overseer supports **per-designer** `gapsByAgent`, LÖVE-specific review checklists, and a bounded **love-testing → lua-coding** retry when validation fails.
 
+**Version 2.4** — **Requirements traceability**: `REQUIREMENTS.md` is generated from each task prompt and linked into `DESIGN.md` after merge; coders see a preview in their prompt. Optional **requirements approval** in the web UI (sidebar) pauses the pipeline for human review before design. **LÖVE complex tasks** use stack-aware **sub-task decomposition** (locomotion and core gameplay before polish). Overseer **code review** explicitly checks **persistent scores** vs RAM-only drift. Optional **`LOVE_SMOKE_CHECKLIST=1`** runs a post-coding JSON smoke hint (movement / persistence). Skill packs updated for in-world visuals, locomotion-first input, and love-testing smoke notes.
+
 ## Overview
 
 Speak or type a task, and specialist agents — designers, coders, testers — collaborate via Cursor CLI to complete it. New agent types are added mostly through **skill packs** under `skills/`, not by changing the server core.
@@ -28,7 +30,7 @@ Speak or type a task, and specialist agents — designers, coders, testers — c
 | **Validation** | Testing / LÖVE testing | Web tests vs busted / `love .` smoke | Filesystem, Playwright, Fetch |
 | **Release** | Release Agent | README, SemVer, tags, PR | Filesystem, GitHub |
 
-BigBoss selects stage agents, runs the Overseer after design merge and after coding, and can trigger focused re-runs. Overseer may return **per-designer** `gapsByAgent` so parallel designers only see feedback for their role; LÖVE stacks get extra Overseer checklists. If **love-testing** fails, the orchestrator can run a bounded **lua-coding** fix-up and retry validation. The **Release** agent runs at the end of a successful pipeline when a repo is configured.
+BigBoss selects stage agents, runs the Overseer after design merge and after coding, and can trigger focused re-runs. **Design gaps** (post-merge design review) may re-run only the parallel designers listed in **`gapsByAgent`** when that set is a proper subset of the group; otherwise all parallel designers re-run. That is separate from **code drift** (post-coding review), which triggers a **single coding** fix-up (with optional **`focusPaths`**) and may run **one follow-up** code review if iteration budget allows — it does **not** re-run designers. LÖVE stacks get extra Overseer checklists. If **love-testing** fails, the orchestrator can run a bounded **lua-coding** fix-up and retry validation. The **Release** agent runs at the end of a successful pipeline when a repo is configured.
 
 ### Architecture
 
@@ -46,6 +48,101 @@ Browser  --HTTP-->  Express (API + SSE + static web/)
   (plan, summarize,   (Cursor CLI      (SQLite + SSE)
    Overseer reviews)  per specialist)
 ```
+
+## Workflow and agent interactions
+
+A **task** is created when the UI sends `POST /voice-command` (text or transcribed audio). The server enqueues work and runs [`runPipeline`](server/src/orchestrator.ts) asynchronously. Progress and logs stream to the browser over **Server-Sent Events** (`GET /tasks/:id/stream`); the UI can **approve**, **revise**, or **reject** at gated steps via `POST /tasks/:id/approve`.
+
+### End-to-end data flow
+
+```mermaid
+flowchart LR
+  subgraph client [Browser]
+    UI[Web UI]
+  end
+  subgraph server [Node server]
+    EX[Express]
+    OR[orchestrator]
+    TS[task-store]
+    LG[SQLite logs]
+  end
+  subgraph agents [Cursor Agent CLI]
+    AG[agent per stage]
+  end
+  UI -->|voice-command SSE| EX
+  EX --> OR
+  OR --> TS
+  OR --> LG
+  OR -->|prompt + workspace| AG
+  AG -->|files git| WS[(Workspace clone)]
+  TS -->|SSE events| UI
+```
+
+### Pipeline lifecycle (logical order)
+
+Stages depend on **pipeline mode** (`full`, `auto`, `code-test`, `code-only`) and **BigBoss** routing in `auto` mode. **Web** stacks use UX / core-code / graphics designers, **`coding`**, **`testing`**. **LÖVE** stacks use **game-designer**, **love-architect**, **love-ux**, **`lua-coding`**, **`love-testing`**. A **release** stage is appended when applicable.
+
+```mermaid
+flowchart TD
+  S[Workspace setup + context cache] --> R[Write REQUIREMENTS.md from prompt]
+  R --> Q{Requirements approval enabled?}
+  Q -->|yes| H1[Human: approve / revise / reject]
+  H1 -->|revise| R
+  Q -->|no| P[Plan stages BigBoss or fixed]
+  P --> D[Design stage(s)]
+  D --> M{Multiple parallel designers?}
+  M -->|yes| MG[Merge into DESIGN.md]
+  M -->|no| MG
+  MG --> L[Link REQUIREMENTS in DESIGN if needed]
+  L --> OD[Overseer design review]
+  OD -->|gaps| D
+  OD -->|ok| DA{Design approval enabled?}
+  DA -->|yes| H2[Human: approve / revise design]
+  DA -->|no| C[Coding + optional sub-tasks]
+  H2 -->|approve| C
+  H2 -->|revise| D
+  C --> V[Lint / optional love runtime verify]
+  V --> OC[Overseer code review + drift fix-ups]
+  OC --> SK{LOVE_SMOKE_CHECKLIST=1 and LÖVE stack?}
+  SK -->|yes| SM[Optional smoke JSON log]
+  SK -->|no| T[Testing stage]
+  SM --> T
+  T --> RL[Release if repo configured]
+```
+
+### Parallel design merge and Overseer
+
+When several designers run in **parallel**, each writes to `.pipeline/<agent>-design.md`. The orchestrator **merges** them into one root **`DESIGN.md`** (agent merge or OpenAI merge, with fallback). **BigBoss (Overseer)** compares the merged design to the original task; on **gaps**, it can target **`gapsByAgent`** so only some designers re-run. The **Original task** block is always prepended so requirements stay visible to downstream agents.
+
+```mermaid
+flowchart LR
+  subgraph parallel [Parallel design]
+    G[game-designer]
+    A[love-architect]
+    U[love-ux]
+  end
+  parallel --> MERGE[Merge to DESIGN.md]
+  MERGE --> OV[Overseer design JSON]
+  OV -->|ok| NEXT[Coding]
+  OV -->|gaps| parallel
+```
+
+### Coding agent handoff
+
+The **coding** agent receives a **preamble** (role, self-checks), **DESIGN.md preview** (truncated — full file must be read from disk), optional **`REQUIREMENTS.md` preview**, **file tree**, and **upstream handoffs** from `.pipeline/*.handoff.md`. After coding, the server may run **lint/build** or **Lua syntax** checks, **execution verification** (`npm run build` or `luac`), then **Overseer code review** (implementation vs design + requirements). **Drift** triggers bounded **fix-up** coding passes with optional **`focusPaths`**. With **`requireDesignApproval`**, **`CODING_NOTES.md`** can trigger a **feedback** gate (continue vs re-run design).
+
+### Human-in-the-loop gates
+
+| Gate | When | UI / API |
+|------|------|----------|
+| **Requirements** | After `REQUIREMENTS.md` is written | Optional checkbox *Require requirements approval*; Approve / Request changes (appends notes) / Reject |
+| **Design** | After merged or single design | Optional *Require design approval*; Approve / Revise / Reject |
+| **Coding feedback** | When design approval is on and `CODING_NOTES.md` exists | Continue to testing / Re-run design |
+| **Cancel** | Any time | `POST /tasks/:id/cancel` |
+
+### Cursor session continuity
+
+[`CURSOR_AGENT_SESSIONS`](server/.env.local.example) controls whether the same **`agent` chat** is resumed per role (`off`, `bigboss`, `all`), so BigBoss and specialists can retain context across iterations within one pipeline run.
 
 **BigBoss in code:** [`server/src/bigboss-director.ts`](server/src/bigboss-director.ts) centralises planning (OpenAI + CLI fallback), human-facing summaries, and Overseer design/code reviews (CLI + API fallback). It prepends the canonical persona from [`skills/bigboss/system-prompt.md`](skills/bigboss/system-prompt.md) to those calls. [`server/src/agent-runner.ts`](server/src/agent-runner.ts) prepends the same file for BigBoss overseer CLI runs and passes `--resume <chatId>` when a session id is set. [`server/src/cursor-session-registry.ts`](server/src/cursor-session-registry.ts) lazily runs `agent create-chat` per `(taskId, agentType)` (see `CURSOR_AGENT_SESSIONS`). Stage definitions live in [`server/src/pipeline-stages.ts`](server/src/pipeline-stages.ts); [`server/src/orchestrator.ts`](server/src/orchestrator.ts) runs the pipeline loop and specialist stages.
 
@@ -86,7 +183,7 @@ You can open `web/index.html` directly (or serve the `web/` folder elsewhere). I
 
 ## Usage
 
-- **Sidebar** — command, project (workspace, repo, branches, pipeline mode), voice, design approval, **Server** (API URL), logging level.
+- **Sidebar** — command, project (workspace, repo, branches, pipeline mode), voice, **design approval**, **requirements approval** (pause before design to edit the extracted checklist), **Server** (API URL), logging level.
 - **Live / History** — current run vs past tasks and logs.
 - **Voice** — browser SpeechRecognition where available; otherwise server-side Whisper if configured.
 
@@ -102,7 +199,7 @@ Structured logs and task history use SQLite at **`server/data/logs.db`**. Notabl
 
 ## How it works
 
-The server loads skill packs, prepares the workspace (clone optional), writes Cursor rules and MCP config, builds prompts, runs `cursor-agent` (or `CURSOR_CLI`), validates output, and commits/pushes when a repo is configured.
+The server loads skill packs from `skills/` (or `SKILLS_ROOT`), prepares the workspace (clone/checkout optional), writes Cursor rules and MCP config into the workspace, builds **per-stage prompts** in [`agent-runner`](server/src/agent-runner.ts), and runs the **Cursor Agent CLI** (`agent`, or `CURSOR_CLI`). BigBoss planning and Overseer reviews use the same persona file [`skills/bigboss/system-prompt.md`](skills/bigboss/system-prompt.md) where applicable. When a **git repo** is configured, successful pipelines **push** the branch and the **release** agent can bump version, commit, tag, and open a PR. See **Workflow and agent interactions** above for the full stage diagram.
 
 ## Development
 
@@ -132,6 +229,7 @@ The `web/` package has a simple `npm run dev` (static serve) if you want to iter
 | `BIGBOSS_PERSIST_CLI` | If `0` and `CURSOR_AGENT_SESSIONS` unset, same as `CURSOR_AGENT_SESSIONS=off` (legacy) | Optional |
 | `BIGBOSS_MODEL` | OpenAI model for planning (default `gpt-4o-mini`) | Optional |
 | `MERGE_MODEL` | Design merge model (defaults to `BIGBOSS_MODEL`) | Optional |
+| `LOVE_SMOKE_CHECKLIST` | If `1`, after a successful LÖVE **coding** stage, log a JSON smoke assessment (movement / persistence) from a read-only model pass | Optional |
 
 ### `CURSOR_AGENT_MODEL` syntax
 
