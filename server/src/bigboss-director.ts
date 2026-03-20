@@ -121,6 +121,8 @@ export interface OverseerCodeReviewResult {
   fit: "ok" | "drift";
   missingOrWrong?: string[];
   suggestedSubTask?: { prompt: string };
+  /** Optional repo-relative paths for the coder to prioritise when fixing drift. */
+  focusPaths?: string[];
 }
 
 function buildBigBossUserMessage(prompt: string, workDir: string, archBrief?: string): string {
@@ -575,7 +577,7 @@ export async function overseerPostCodeReview(
     const model = getBigBossModel();
     const loveBlock = stack === "love" ? `\n\n${OVERSEER_LOVE_CODE_CHECKLIST}\n` : "";
     const systemContent = `${skillBlock}You are BigBoss in Overseer mode. Review implementation against the design and original task. You receive the design document, a file tree, AND the actual content of key source files. Verify that each requirement from the Original task is implemented in the source code, not just that a file exists.${loveBlock}
-Respond with JSON only: { "fit": "ok" | "drift", "missingOrWrong": ["item1", "item2"] (if fit is drift), "suggestedSubTask": { "prompt": "focused instructions for the coder to add or fix these items" } (optional, if fit is drift) }. Be concise.`;
+Respond with JSON only: { "fit": "ok" | "drift", "missingOrWrong": ["item1", "item2"] (if fit is drift), "focusPaths": ["src/foo.lua", "main.lua"] (optional; repo-relative files/dirs to change first), "suggestedSubTask": { "prompt": "focused instructions for the coder to add or fix these items" } (optional, if fit is drift) }. Be concise.`;
     const response = await client.chat.completions.create({
       model,
       messages: [
@@ -593,6 +595,9 @@ Respond with JSON only: { "fit": "ok" | "drift", "missingOrWrong": ["item1", "it
     if (!raw) return null;
     const parsed = JSON.parse(raw) as OverseerCodeReviewResult;
     if (parsed.fit !== "ok" && parsed.fit !== "drift") parsed.fit = "ok";
+    if (parsed.focusPaths !== undefined && !Array.isArray(parsed.focusPaths)) {
+      delete parsed.focusPaths;
+    }
     return parsed;
   } catch (err) {
     log.warn("Overseer post-code review (API fallback) failed", { err: String(err) }, "flow");

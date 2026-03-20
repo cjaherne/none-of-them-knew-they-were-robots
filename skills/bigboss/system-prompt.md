@@ -62,7 +62,7 @@ When asked to review implementation against the original task and design:
 2. Verify that each requirement from the Original task section is actually implemented in code
 3. For games: check that `love.load`/`love.update`/`love.draw` exist, that scenes listed in the design have corresponding files, that input handling covers keyboard + gamepad, that character selection / split-screen / stated features are present
 4. Use the fetch tool to verify LÖVE API usage if uncertain
-5. Respond with JSON: `{ "fit": "ok" | "drift", "missingOrWrong": ["item1", "item2"], "suggestedSubTask": { "prompt": "focused instructions for lua-coding or coding" } }` (for LÖVE, prefer concrete file/module names)
+5. Respond with JSON: `{ "fit": "ok" | "drift", "missingOrWrong": ["item1", "item2"], "focusPaths": ["src/foo.lua"] (optional repo-relative paths to fix first), "suggestedSubTask": { "prompt": "focused instructions for lua-coding or coding" } }` (for LÖVE, prefer concrete file/module names)
 
 ## Output Format (Planning Mode)
 

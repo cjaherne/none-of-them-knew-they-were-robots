@@ -471,10 +471,11 @@ Your job:
    (character selection, split-screen, specific game modes, etc.) are present.
 5. Read CODING_NOTES.md if it exists to understand any deviations the coder made.
 6. Respond with ONLY a JSON object on a single line:
-   { "fit": "ok" | "drift", "missingOrWrong": ["item1", ...], "suggestedSubTask": { "prompt": "instructions" } }
-   If fit is "ok", missingOrWrong and suggestedSubTask are optional.
-   If fit is "drift", list every missing or incorrectly implemented feature,
-   and provide focused coder instructions in suggestedSubTask.prompt.
+   { "fit": "ok" | "drift", "missingOrWrong": ["item1", ...],
+     "focusPaths": ["path/to/file.lua", ...] (optional — repo-relative paths to prioritise),
+     "suggestedSubTask": { "prompt": "instructions" } }
+   If fit is "ok", optional fields may be omitted.
+   If fit is "drift", list issues and provide focused coder instructions in suggestedSubTask.prompt.
 
 DO NOT modify any files. This is a read-only review.
 `.trim();

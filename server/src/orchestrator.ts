@@ -39,6 +39,75 @@ import {
   type PipelineStack,
 } from "./pipeline-stages";
 
+/** Placeholder upstream row when a parallel designer is skipped on a targeted gaps re-run (file on disk retained). */
+function syntheticRetainedDesignResult(agent: string): AgentRunResult {
+  return {
+    agent,
+    success: true,
+    output: "",
+    parsed: {
+      assistantMessage: "",
+      filesWritten: [],
+      shellCommands: [],
+      errors: [],
+      tokenUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 },
+    },
+    filesModified: [],
+    errors: [],
+    durationMs: 0,
+  };
+}
+
+/**
+ * When Overseer gaps map to a non-empty proper subset of parallel designers, re-run only those agents.
+ * Returns null if gapsByAgent is missing, invalid, or covers all designers (same as full re-run).
+ */
+function computePartialDesignRerunAgents(
+  stageDefs: StageDefinition[],
+  gapsByAgent: Record<string, string> | undefined,
+): string[] | null {
+  if (!gapsByAgent) return null;
+  const keys = Object.keys(gapsByAgent).filter(
+    (k) => typeof gapsByAgent[k] === "string" && gapsByAgent[k].trim().length > 0,
+  );
+  if (keys.length === 0) return null;
+  const inGroup = new Set(stageDefs.map((s) => s.agent));
+  if (!keys.every((k) => inGroup.has(k))) return null;
+  if (keys.length >= inGroup.size) return null;
+  return keys;
+}
+
+/** Remove upstream results for agents that will be re-run (parallel group is last N entries). */
+function spliceParallelUpstreamForRerun(
+  upstreamResults: AgentRunResult[],
+  stageDefs: StageDefinition[],
+  agentsToRerun: Set<string>,
+): void {
+  const n = stageDefs.length;
+  const offset = upstreamResults.length - n;
+  if (offset < 0 || n === 0) return;
+  for (let i = n - 1; i >= 0; i--) {
+    const agent = stageDefs[i].agent;
+    if (agentsToRerun.has(agent)) {
+      upstreamResults.splice(offset + i, 1);
+    }
+  }
+}
+
+function normaliseOverseerFocusPaths(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+    .map((p) => p.trim())
+    .slice(0, 25);
+}
+
+function formatOverseerFocusPaths(paths: string[]): string {
+  if (paths.length === 0) return "";
+  const lines = paths.map((p) => `- ${p}`);
+  return `\n\nPrefer edits under these paths (repo-relative):\n${lines.join("\n")}`;
+}
+
 function prependOriginalTaskToDesign(workDir: string, designContent: string, originalTask: string): string {
   const header = "## Original task (source of truth)\n\n" + originalTask.trim() + "\n\n---\n\n";
   return header + designContent;
@@ -504,6 +573,8 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
   let designReviewIterations = 0;
   let codeReviewIterations = 0;
   let loveTestFixIterations = 0;
+  /** After Overseer design gaps: if non-null, next parallel design pass re-runs only these agent ids (subset of group). */
+  let pendingPartialDesignRerun: string[] | null = null;
   let feedbackFingerprint: string | undefined;
   let groupIndex = 0;
 
@@ -517,15 +588,45 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
     const group = stageGroups[groupIndex];
 
     if (group.parallel && group.stageDefs.length > 1) {
-      log.info(`Running ${group.stageDefs.length} stages in parallel: ${group.stageDefs.map((s) => s.name).join(", ")}`, { agents: group.stageDefs.map((s) => s.agent) }, "status");
-      taskStore.emit_log(task.id, `Running ${group.stageDefs.length} agents in parallel: ${group.stageDefs.map((s) => s.agent).join(", ")}`);
+      const agentsInGroup = group.stageDefs.map((s) => s.agent);
+      let effectiveRerunAgents: string[];
+      if (pendingPartialDesignRerun !== null) {
+        const filtered = pendingPartialDesignRerun.filter((a) => agentsInGroup.includes(a));
+        effectiveRerunAgents = filtered.length > 0 ? filtered : agentsInGroup;
+        pendingPartialDesignRerun = null;
+      } else {
+        effectiveRerunAgents = agentsInGroup;
+      }
+      const rerunSet = new Set(effectiveRerunAgents);
+
+      if (effectiveRerunAgents.length < agentsInGroup.length) {
+        taskStore.emit_log(
+          task.id,
+          `Overseer design gaps: re-running only ${effectiveRerunAgents.join(", ")} (other designers’ .pipeline outputs kept).`,
+        );
+      }
+      log.info(
+        `Parallel group: ${group.stageDefs.map((s) => s.name).join(", ")}; executing ${effectiveRerunAgents.join(", ")}`,
+        { agents: agentsInGroup },
+        "status",
+      );
+      taskStore.emit_log(
+        task.id,
+        effectiveRerunAgents.length === agentsInGroup.length
+          ? `Running ${agentsInGroup.length} agents in parallel: ${agentsInGroup.join(", ")}`
+          : `Partial parallel run (${effectiveRerunAgents.length}/${agentsInGroup.length}): ${effectiveRerunAgents.join(", ")}`,
+      );
 
       for (const s of group.stageDefs) {
-        taskStore.updateStage(task.id, s.name, { status: "running", startedAt: new Date().toISOString() });
+        if (rerunSet.has(s.agent)) {
+          taskStore.updateStage(task.id, s.name, { status: "running", startedAt: new Date().toISOString() });
+        }
       }
 
       const isDesignGroup = group.stageDefs[0]?.category === "design";
-      const parallelPromises = group.stageDefs.map(async (stage) => {
+      const stagesToRun = group.stageDefs.filter((s) => rerunSet.has(s.agent));
+
+      const parallelPromises = stagesToRun.map(async (stage) => {
         let stagePrompt = task.prompt;
         if (stage.category === "design" && (designFeedback || designFeedbackByAgent)) {
           const scoped = designFeedbackByAgent?.[stage.agent];
@@ -563,7 +664,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
         }, signal);
       });
 
-      const parallelResults = await Promise.all(parallelPromises);
+      const freshResults = await Promise.all(parallelPromises);
 
       if (signal.aborted) {
         log.warn("Cancelled during parallel stages", undefined, "status");
@@ -571,10 +672,15 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
         return;
       }
 
-      let allSucceeded = true;
-      for (let i = 0; i < group.stageDefs.length; i++) {
-        const stage = group.stageDefs[i];
-        const result = parallelResults[i];
+      const freshByAgent = new Map(stagesToRun.map((s, i) => [s.agent, freshResults[i]] as const));
+      const parallelResultsOrdered: AgentRunResult[] = group.stageDefs.map((stage) => {
+        const r = freshByAgent.get(stage.agent);
+        return r ?? syntheticRetainedDesignResult(stage.agent);
+      });
+
+      for (const stage of group.stageDefs) {
+        if (!rerunSet.has(stage.agent)) continue;
+        const result = freshByAgent.get(stage.agent)!;
         upstreamResults.push(result);
 
         if (result.success) {
@@ -587,7 +693,6 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
             estimatedCost: result.estimatedCost,
           });
         } else {
-          allSucceeded = false;
           taskStore.updateStage(task.id, stage.name, {
             status: "failed",
             completedAt: new Date().toISOString(),
@@ -597,8 +702,14 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
         }
       }
 
+      let allSucceeded = true;
+      for (const stage of stagesToRun) {
+        const result = freshByAgent.get(stage.agent)!;
+        if (!result.success) allSucceeded = false;
+      }
+
       if (!allSucceeded) {
-        const failedNames = group.stageDefs.filter((_, i) => !parallelResults[i].success).map((s) => s.name);
+        const failedNames = stagesToRun.filter((s) => !freshByAgent.get(s.agent)!.success).map((s) => s.name);
         taskStore.updateTaskStatus(task.id, TaskStatus.Failed, `Parallel stages failed: ${failedNames.join(", ")}`);
         taskStore.cleanupAbort(task.id);
         return;
@@ -606,10 +717,10 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
 
       if (group.stageDefs[0]?.category === "design" && group.stageDefs.length > 1) {
         taskStore.emit_log(task.id, `Merging ${group.stageDefs.length} design documents…`);
-        await mergeDesignOutputs(workDir, parallelResults, sessionRegistry, task.prompt, skillsRoot, task.id, signal);
+        await mergeDesignOutputs(workDir, parallelResultsOrdered, sessionRegistry, task.prompt, skillsRoot, task.id, signal);
         taskStore.emit_log(task.id, `Merged ${group.stageDefs.length} design documents`);
 
-        taskStore.emit_overseer_log(task.id, "BigBoss (Overseer): reviewing design against requirements…", {
+        taskStore.emit_overseer_log(task.id, "BigBoss (Overseer): design review — comparing merged design to requirements…", {
           phase: "design-review",
           status: "running",
         });
@@ -627,31 +738,49 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
           designReview?.fit === "ok"
             ? "BigBoss (Overseer): design fits requirements."
             : designReview?.fit === "gaps"
-              ? "BigBoss (Overseer): gaps found; re-running design."
+              ? "BigBoss (Overseer): design gaps found; re-running affected designer(s)."
               : "BigBoss (Overseer): design review complete.",
           { phase: "design-review", status: "done", result: designReview?.fit === "ok" ? "ok" : designReview?.fit === "gaps" ? "gaps" : undefined },
         );
         if (designReview?.fit === "gaps" && designReviewIterations < MAX_OVERSEER_DESIGN_ITERATIONS) {
           designReviewIterations++;
           designFeedbackByAgent = undefined;
+          let cleanedGapsByAgent: Record<string, string> | undefined;
           const rawByAgent = designReview.gapsByAgent;
           if (rawByAgent && typeof rawByAgent === "object") {
             const cleaned: Record<string, string> = {};
             for (const [k, v] of Object.entries(rawByAgent)) {
               if (typeof v === "string" && v.trim()) cleaned[k] = v.trim();
             }
-            if (Object.keys(cleaned).length > 0) designFeedbackByAgent = cleaned;
+            if (Object.keys(cleaned).length > 0) {
+              designFeedbackByAgent = cleaned;
+              cleanedGapsByAgent = cleaned;
+            }
           }
+          const partialAgents = computePartialDesignRerunAgents(group.stageDefs, cleanedGapsByAgent);
+          pendingPartialDesignRerun = partialAgents;
           designFeedback = designReview.suggestedSubTask?.prompt
-            ? `Overseer found gaps; address these in your design:\n${designReview.suggestedSubTask.prompt}`
-            : `Overseer found gaps: ${(designReview.gaps || []).join("; ")}`;
+            ? `Overseer found design gaps; address these in your design:\n${designReview.suggestedSubTask.prompt}`
+            : `Overseer found design gaps: ${(designReview.gaps || []).join("; ")}`;
           const gapList = (designReview.gaps || []).slice(0, 5).join("; ");
           const gapDetail = gapList ? ` Gaps: ${gapList}${(designReview.gaps?.length ?? 0) > 5 ? "…" : ""}` : "";
-          taskStore.emit_log(task.id, `Overseer design review: gaps found (iteration ${designReviewIterations}). Re-running design.${gapDetail}`);
-          log.info("Overseer design review: re-running design for gaps", { gaps: designReview.gaps }, "flow");
-          upstreamResults.splice(upstreamResults.length - group.stageDefs.length, group.stageDefs.length);
+          const rerunLabel =
+            partialAgents && partialAgents.length < group.stageDefs.length
+              ? `Re-running designers: ${partialAgents.join(", ")}`
+              : "Re-running all parallel designers";
+          taskStore.emit_log(
+            task.id,
+            `Overseer design gaps (iteration ${designReviewIterations}). ${rerunLabel}.${gapDetail}`,
+          );
+          log.info("Overseer design gaps: scheduling designer re-run", { gaps: designReview.gaps, partialAgents }, "flow");
+          const agentsToSplice = new Set(
+            partialAgents && partialAgents.length > 0 ? partialAgents : group.stageDefs.map((s) => s.agent),
+          );
+          spliceParallelUpstreamForRerun(upstreamResults, group.stageDefs, agentsToSplice);
           for (const s of group.stageDefs) {
-            taskStore.updateStage(task.id, s.name, { status: "pending" as const });
+            if (agentsToSplice.has(s.agent)) {
+              taskStore.updateStage(task.id, s.name, { status: "pending" as const });
+            }
           }
           continue;
         } else if (designReview?.fit === "ok") {
@@ -968,18 +1097,23 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
               codeReview?.fit === "ok"
                 ? "BigBoss (Overseer): implementation fits design and requirements."
                 : codeReview?.fit === "drift"
-                  ? "BigBoss (Overseer): drift found; running fix-up pass."
+                  ? "BigBoss (Overseer): code drift found; running coder fix-up pass."
                   : "BigBoss (Overseer): code review complete.",
               { phase: "code-review", status: "done", result: codeReview?.fit === "ok" ? "ok" : codeReview?.fit === "drift" ? "drift" : undefined },
             );
             if (codeReview?.fit === "drift" && codeReview.suggestedSubTask?.prompt) {
               codeReviewIterations++;
-              taskStore.emit_log(task.id, `Overseer code review: drift found. Running fix-up pass (${codeReviewIterations}).`);
+              taskStore.emit_log(
+                task.id,
+                `Overseer code review: code drift found. Running coder fix-up (${codeReviewIterations}/${MAX_OVERSEER_CODE_ITERATIONS}).`,
+              );
               log.info("Overseer code review: re-running coder for drift", { missingOrWrong: codeReview.missingOrWrong }, "flow");
+              const focusPaths = normaliseOverseerFocusPaths(codeReview.focusPaths);
+              const focusBlock = formatOverseerFocusPaths(focusPaths);
               const overseerFixSessionId = await sessionRegistry.getOrCreate(stage.agent);
               const overseerConfig: AgentRunConfig = {
                 ...baseConfig,
-                prompt: `${task.prompt}\n\n## Overseer code review\n${codeReview.suggestedSubTask.prompt}`,
+                prompt: `${task.prompt}\n\n## Overseer code review (code drift)${focusBlock}\n\n${codeReview.suggestedSubTask.prompt}`,
                 agentType: stage.agent,
                 category: "coding",
                 workspaceReady: true,
@@ -992,7 +1126,62 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
               const overseerResult = await runAgent(overseerConfig, workDir, undefined, signal);
               upstreamResults.push(overseerResult);
               if (overseerResult.success) {
-                taskStore.emit_log(task.id, `Overseer fix-up completed: ${overseerResult.filesModified?.length ?? 0} files.`);
+                taskStore.emit_log(task.id, `Overseer code drift fix-up completed: ${overseerResult.filesModified?.length ?? 0} files.`);
+              }
+
+              if (overseerResult.success && codeReviewIterations < MAX_OVERSEER_CODE_ITERATIONS) {
+                taskStore.emit_overseer_log(task.id, "BigBoss (Overseer): re-checking code after drift fix-up…", {
+                  phase: "code-review",
+                  status: "running",
+                });
+                const recheck = await overseerPostCodeReview(
+                  workDir,
+                  task.prompt,
+                  skillsRoot,
+                  task.id,
+                  await sessionRegistry.getOrCreate("bigboss"),
+                  signal,
+                  { stack: pipelineStack },
+                );
+                taskStore.emit_overseer_log(
+                  task.id,
+                  recheck?.fit === "ok"
+                    ? "BigBoss (Overseer): post-fix code review OK."
+                    : recheck?.fit === "drift"
+                      ? "BigBoss (Overseer): code drift remains after fix-up; second fix-up if budget allows."
+                      : "BigBoss (Overseer): post-fix code review complete.",
+                  { phase: "code-review", status: "done", result: recheck?.fit === "ok" ? "ok" : recheck?.fit === "drift" ? "drift" : undefined },
+                );
+                if (recheck?.fit === "drift" && recheck.suggestedSubTask?.prompt && codeReviewIterations < MAX_OVERSEER_CODE_ITERATIONS) {
+                  codeReviewIterations++;
+                  const recheckFocus = normaliseOverseerFocusPaths(recheck.focusPaths);
+                  const recheckFocusBlock = formatOverseerFocusPaths(recheckFocus);
+                  const secondFixSessionId = await sessionRegistry.getOrCreate(stage.agent);
+                  const secondFixConfig: AgentRunConfig = {
+                    ...baseConfig,
+                    prompt: `${task.prompt}\n\n## Overseer code review (code drift, follow-up)${recheckFocusBlock}\n\n${recheck.suggestedSubTask.prompt}`,
+                    agentType: stage.agent,
+                    category: "coding",
+                    workspaceReady: true,
+                    trivial: isTrivial,
+                    complexity,
+                    upstreamResults: [...upstreamResults],
+                    agentBrief: agentBriefs[stage.agent] ?? null,
+                    cursorSessionId: secondFixSessionId,
+                  };
+                  taskStore.emit_log(
+                    task.id,
+                    `Overseer: second code drift fix-up (${codeReviewIterations}/${MAX_OVERSEER_CODE_ITERATIONS}).`,
+                  );
+                  const secondResult = await runAgent(secondFixConfig, workDir, undefined, signal);
+                  upstreamResults.push(secondResult);
+                  if (secondResult.success) {
+                    taskStore.emit_log(
+                      task.id,
+                      `Second drift fix-up completed: ${secondResult.filesModified?.length ?? 0} files.`,
+                    );
+                  }
+                }
               }
             } else if (codeReview?.fit === "ok") {
               taskStore.emit_log(task.id, "Overseer code review: implementation fits design and task.");
