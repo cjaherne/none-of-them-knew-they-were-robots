@@ -8,8 +8,8 @@ import { createLogger, addGlobalTransport, setGlobalLogLevel, getGlobalLogLevel 
 import type { LogLevel, LogEntry } from "@agents/shared";
 import { SqliteTransport, getLogs, getTaskHistory, getTaskById, getLogsForTask } from "./log-store";
 import type { LogTransport } from "@agents/shared";
-import { taskStore } from "./local-task-store";
-import { runPipeline } from "./local-orchestrator";
+import { taskStore } from "./task-store";
+import { runPipeline } from "./orchestrator";
 
 addGlobalTransport(new SqliteTransport());
 if (process.env.LOG_LEVEL) {
@@ -28,7 +28,7 @@ app.use((_req, res, next) => {
   next();
 });
 
-const webRoot = path.resolve(__dirname, "..", "..", "client", "web");
+const webRoot = path.resolve(__dirname, "..", "..", "web");
 app.use(express.static(webRoot));
 
 // --- POST /voice-command ---

@@ -110,7 +110,7 @@ When the loop limit is reached (or criteria say "don’t loop") but `CODING_NOTE
 
 ### Phase 1: Enable feedback when approval is off
 
-- [ ] Remove the `task.requireDesignApproval` gate around the coding feedback block in `local-orchestrator.ts` (lines ~831–862).
+- [ ] Remove the `task.requireDesignApproval` gate around the coding feedback block in `orchestrator.ts` (lines ~831–862).
 - [ ] Add a branch: if `requireDesignApproval` is true, keep current behavior (request user approval; on "redesign", loop). If false, use automatic criteria + iteration logic to decide whether to loop.
 
 ### Phase 2: Criteria-based filtering
@@ -150,11 +150,11 @@ Proposed task/pipeline options:
 
 | File | Changes |
 |------|---------|
-| `test-harness/src/local-orchestrator.ts` | Ungate coding feedback when approval off; add criteria + iteration logic; emit unimplemented summary |
-| `test-harness/src/local-task-store.ts` | Extend `StageStatus` with `feedbackLimitReached`, `unaddressedFeedback` |
+| `server/src/orchestrator.ts` | Ungate coding feedback when approval off; add criteria + iteration logic; emit unimplemented summary |
+| `server/src/task-store.ts` | Extend `StageStatus` with `feedbackLimitReached`, `unaddressedFeedback` |
 | `packages/shared/src/types.ts` | Add `feedbackLimitReached`, `unaddressedFeedback` to stage type if shared |
-| `test-harness/src/feedback-criteria.ts` (new) | `parseCodingNotes`, `shouldLoopOnFeedback` |
-| `client/web/app.js` | Render "Feedback not implemented" card when stage has `feedbackLimitReached` |
+| `server/src/feedback-criteria.ts` (new) | `parseCodingNotes`, `shouldLoopOnFeedback` |
+| `web/app.js` | Render "Feedback not implemented" card when stage has `feedbackLimitReached` |
 | `skills/coding/` (optional) | Consider adding `## Severity` or structured markers to CODING_NOTES for easier parsing |
 
 ---

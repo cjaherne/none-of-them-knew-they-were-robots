@@ -30,7 +30,7 @@ export interface ApprovalResponse {
   feedback?: string;
 }
 
-export interface MvpTask extends Task {
+export interface RuntimeTask extends Task {
   workspace?: string;
   baseBranch: string;
   branch: string;
@@ -40,7 +40,7 @@ export interface MvpTask extends Task {
 }
 
 class TaskStore {
-  private tasks = new Map<string, MvpTask>();
+  private tasks = new Map<string, RuntimeTask>();
   private emitter = new EventEmitter();
   private approvalResolvers = new Map<string, (response: ApprovalResponse) => void>();
   private abortControllers = new Map<string, AbortController>();
@@ -52,12 +52,12 @@ class TaskStore {
   createTask(
     prompt: string,
     opts: { repo?: string; workspace?: string; baseBranch?: string; branch?: string; pipelineMode?: PipelineMode; requireApproval?: boolean } = {},
-  ): MvpTask {
+  ): RuntimeTask {
     const now = new Date().toISOString();
     const id = uuid();
     const branch = opts.branch || `agent/${id.slice(0, 8)}`;
     const pipelineMode = opts.pipelineMode || "full";
-    const task: MvpTask = {
+    const task: RuntimeTask = {
       id,
       prompt,
       status: TaskStatus.Queued,
@@ -84,7 +84,7 @@ class TaskStore {
     return task;
   }
 
-  getTask(taskId: string): MvpTask | undefined {
+  getTask(taskId: string): RuntimeTask | undefined {
     return this.tasks.get(taskId);
   }
 

@@ -1,5 +1,5 @@
 {
-  "name": "@agents/test-harness",
+  "name": "@agents/server",
   "version": "0.1.0",
   "private": true,
   "scripts": {

@@ -2,7 +2,7 @@ import * as path from "path";
 import { promises as fs, accessSync, readFileSync } from "fs";
 import { execSync as cpExecSync, spawn } from "child_process";
 import { TaskStatus, PipelineStage, PipelineStageAgent, createLogger } from "@agents/shared";
-import { taskStore, MvpTask, PipelineMode, StageStatus, ApprovalResponse } from "./local-task-store";
+import { taskStore, RuntimeTask, PipelineMode, StageStatus, ApprovalResponse } from "./task-store";
 import {
   runAgent,
   runPlanner,
@@ -13,7 +13,7 @@ import {
   buildContextBrief,
   AgentRunConfig,
   AgentRunResult,
-} from "./local-agent-runner";
+} from "./agent-runner";
 import { loadOrBuildCache, getCacheBrief } from "./context-cache";
 import { parseCodingNotes, shouldLoopOnFeedback } from "./feedback-criteria";
 
@@ -1025,7 +1025,7 @@ async function planWithBigBoss(
 
 const MAX_DESIGN_LOOPS = 2;
 
-export async function runPipeline(task: MvpTask): Promise<void> {
+export async function runPipeline(task: RuntimeTask): Promise<void> {
   const skillsRoot = resolveSkillsRoot();
   const upstreamResults: AgentRunResult[] = [];
   const pid = task.id.slice(0, 8);

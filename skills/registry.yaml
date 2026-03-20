@@ -1,4 +1,4 @@
-# Agent registry for the local test harness. Optional `resources` entries are unused metadata (historical).
+# Agent registry for the app (server loads skill packs from disk). Optional `resources` entries are unused metadata (historical).
 categories:
   - name: analysis
     order: 1

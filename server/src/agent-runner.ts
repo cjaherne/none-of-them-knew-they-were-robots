@@ -4,7 +4,7 @@ import { promises as fs, access as accessCb } from "fs";
 import * as path from "path";
 import * as os from "os";
 import { createLogger } from "@agents/shared";
-import { loadSkillPack, SkillPack } from "./local-skill-loader";
+import { loadSkillPack, SkillPack } from "./skill-loader";
 
 const log = createLogger("agent-runner");
 
@@ -854,7 +854,7 @@ function buildFullPrompt(
 export async function setupWorkspace(config: AgentRunConfig): Promise<string> {
   const workDir = config.workspace
     ? config.workspace
-    : path.join(os.tmpdir(), `agent-mvp-${config.pipelineId}`);
+    : path.join(os.tmpdir(), `agents-robots-${config.pipelineId}`);
 
   await fs.mkdir(workDir, { recursive: true });
 
@@ -1312,7 +1312,7 @@ export async function runAgent(
   };
 }
 
-const LOG_DIR = path.join(os.tmpdir(), "agent-mvp-logs");
+const LOG_DIR = path.join(os.tmpdir(), "agents-robots-logs");
 
 async function writeDebugLog(
   agentType: string,
