@@ -1,11 +1,10 @@
 import * as path from "path";
 import { promises as fs, accessSync, readFileSync } from "fs";
 import { execSync as cpExecSync, spawn } from "child_process";
-import { TaskStatus, PipelineStage, PipelineStageAgent, createLogger } from "@agents/shared";
-import { taskStore, RuntimeTask, PipelineMode, StageStatus, ApprovalResponse } from "./task-store";
+import { TaskStatus, createLogger } from "@agents/shared";
+import { taskStore, RuntimeTask, StageStatus, ApprovalResponse } from "./task-store";
 import {
   runAgent,
-  runPlanner,
   setupWorkspace,
   pushBranch,
   readCodingNotes,
@@ -14,193 +13,28 @@ import {
   AgentRunConfig,
   AgentRunResult,
 } from "./agent-runner";
+import { createCursorSessionRegistry, type CursorSessionRegistry } from "./cursor-session-registry";
 import { loadOrBuildCache, getCacheBrief } from "./context-cache";
 import { parseCodingNotes, shouldLoopOnFeedback } from "./feedback-criteria";
-
-/** Configurable OpenAI model for BigBoss planning and design merge (default: gpt-4o-mini). */
-function getBigBossModel(): string {
-  return process.env.BIGBOSS_MODEL || "gpt-4o-mini";
-}
-
-/** Configurable OpenAI model for design merge (default: same as BigBoss). */
-function getMergeModel(): string {
-  return process.env.MERGE_MODEL || getBigBossModel();
-}
-
-interface StageDefinition {
-  name: string;
-  agent: string;
-  category: string;
-}
-
-const FULL_STAGES: StageDefinition[] = [
-  { name: "design", agent: "core-code-designer", category: "design" },
-  { name: "coding", agent: "coding", category: "coding" },
-  { name: "validation", agent: "testing", category: "validation" },
-];
-
-const STAGE_MAP: Record<string, StageDefinition> = {
-  design: FULL_STAGES[0],
-  coding: FULL_STAGES[1],
-  testing: FULL_STAGES[2],
-};
-
-const PARALLEL_DESIGNERS: StageDefinition[] = [
-  { name: "ux-design", agent: "ux-designer", category: "design" },
-  { name: "core-design", agent: "core-code-designer", category: "design" },
-  { name: "visual-design", agent: "graphics-designer", category: "design" },
-  { name: "game-design", agent: "game-designer", category: "design" },
-];
-
-/** Maps BigBoss agent type string to StageDefinition (for full stages[].agents[] format) */
-const AGENT_TYPE_TO_DEF: Record<string, StageDefinition> = {
-  "ux-designer": { name: "ux-design", agent: "ux-designer", category: "design" },
-  "core-code-designer": { name: "core-design", agent: "core-code-designer", category: "design" },
-  "graphics-designer": { name: "visual-design", agent: "graphics-designer", category: "design" },
-  "game-designer": { name: "game-design", agent: "game-designer", category: "design" },
-  "coding": { name: "coding", agent: "coding", category: "coding" },
-  "lua-coding": { name: "coding", agent: "lua-coding", category: "coding" },
-  "testing": { name: "validation", agent: "testing", category: "validation" },
-};
-
-const RELEASE_STAGE: StageDefinition = { name: "release", agent: "release", category: "release" };
-
-function resolveSkillsRoot(): string {
-  return (
-    process.env.SKILLS_ROOT ||
-    path.resolve(__dirname, "..", "..", "skills")
-  );
-}
-
-function skillPackExists(agent: string): boolean {
-  const skillsRoot = resolveSkillsRoot();
-  try {
-    require("fs").accessSync(path.join(skillsRoot, agent, "system-prompt.md"));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function getAvailableParallelDesigners(): StageDefinition[] {
-  const available = PARALLEL_DESIGNERS.filter((s) => {
-    const exists = skillPackExists(s.agent);
-    if (!exists) {
-      createLogger("orchestrator").warn(`Skill pack not found for ${s.agent}, skipping`);
-    }
-    return exists;
-  });
-  return available;
-}
-
-function stagesForMode(mode: PipelineMode): StageDefinition[] {
-  switch (mode) {
-    case "code-test":
-      return [STAGE_MAP.coding, STAGE_MAP.testing];
-    case "code-only":
-      return [STAGE_MAP.coding];
-    case "full":
-    default:
-      return [...FULL_STAGES];
-  }
-}
-
-const BIGBOSS_ROUTING_PROMPT = `You are a pipeline planner. Given a task, decide which pipeline stages are needed and estimate complexity.
-Respond with ONLY a JSON object: { "stages": ["design", "coding", "testing"], "complexity": "trivial" | "moderate" | "complex" }
-
-Rules:
-- "design" = architecture/planning needed (new features, complex changes)
-- "coding" = implementation needed (code changes, file creation)
-- "testing" = test creation/validation needed
-- Simple fixes may only need "coding"
-- Documentation tasks may only need "coding"
-- Most new features need all three stages
-- If unsure, include all three
-
-Complexity guide:
-- "trivial" = one-line fix, rename, typo, config change
-- "moderate" = single-feature addition, small refactor
-- "complex" = multi-file feature, architectural change, new system`;
-
-const BIGBOSS_CONTEXT_BROKER_PROMPT = `You are BigBoss, a context broker for a multi-agent pipeline. You will receive a task description and a codebase summary. Your job is to produce a pipeline plan using the FULL stage/agent structure.
-
-Respond with ONLY a JSON object:
-{
-  "stages": [
-    {
-      "name": "design",
-      "parallel": true,
-      "agents": [
-        { "type": "agent-type", "context": { "focus": "1-3 sentences for this agent" } }
-      ]
-    },
-    { "name": "coding", "parallel": false, "agents": [{ "type": "coding" or "lua-coding", "context": { "focus": "..." } }] },
-    { "name": "validation", "parallel": false, "agents": [{ "type": "testing", "context": { "focus": "..." } }] }
-  ],
-  "complexity": "trivial" | "moderate" | "complex",
-  "reasoning": "Brief explanation"
-}
-
-Allowed agent types: ux-designer, core-code-designer, graphics-designer, game-designer, coding, lua-coding, testing.
-
-- **Web/UI tasks**: In the design stage (parallel: true) include ux-designer, core-code-designer, graphics-designer. Use coding for the coding stage.
-- **Full videogame / Lua / LÖVE tasks**: Set complexity to "complex". In the design stage (parallel: true) include MULTIPLE designers: game-designer (mechanics, controls, Lua structure), core-code-designer (architecture, modules), ux-designer (menus, HUD, flows), graphics-designer (visual style, art direction). Use lua-coding (not coding) for the coding stage. Do not use only one designer for a full game.
-- Designer agents run in parallel (parallel: true) when there are two or more in the same stage.
-- Each agent must have context.focus with 1-3 sentences (under 300 chars). Reference the task or codebase where helpful.`;
-
-interface BigBossResult {
-  stages: StageDefinition[];
-  stageGroups: RuntimeStageGroup[];
-  complexity: "trivial" | "moderate" | "complex";
-  agentBriefs: Record<string, string>;
-  parallelDesign: boolean;
-}
-
-/** Runtime pipeline stage -- extends shared PipelineStage with local StageDefinitions */
-interface RuntimeStageGroup extends PipelineStage {
-  stageDefs: StageDefinition[];
-}
-
-function groupStages(stages: StageDefinition[], parallelDesign: boolean): RuntimeStageGroup[] {
-  const groups: RuntimeStageGroup[] = [];
-
-  if (parallelDesign) {
-    const designStages = stages.filter((s) => s.category === "design");
-    const nonDesign = stages.filter((s) => s.category !== "design");
-
-    if (designStages.length > 1) {
-      groups.push({
-        name: "design",
-        parallel: true,
-        agents: designStages.map((d) => ({ type: d.agent })),
-        stageDefs: designStages,
-      });
-    } else if (designStages.length === 1) {
-      groups.push({
-        name: designStages[0].name,
-        agents: [{ type: designStages[0].agent }],
-        stageDefs: designStages,
-      });
-    }
-    for (const s of nonDesign) {
-      groups.push({
-        name: s.name,
-        agents: [{ type: s.agent }],
-        stageDefs: [s],
-      });
-    }
-  } else {
-    for (const s of stages) {
-      groups.push({
-        name: s.name,
-        agents: [{ type: s.agent }],
-        stageDefs: [s],
-      });
-    }
-  }
-
-  return groups;
-}
+import {
+  planWithBigBoss,
+  bigBossSummarize,
+  overseerPostDesignReview,
+  overseerPostCodeReview,
+  getBigBossModel,
+  getMergeModel,
+  MAX_OVERSEER_DESIGN_ITERATIONS,
+  MAX_OVERSEER_CODE_ITERATIONS,
+  type BigBossResult,
+} from "./bigboss-director";
+import {
+  FULL_STAGES,
+  RELEASE_STAGE,
+  stagesForMode,
+  groupStages,
+  resolveSkillsRoot,
+  type StageDefinition,
+} from "./pipeline-stages";
 
 function prependOriginalTaskToDesign(workDir: string, designContent: string, originalTask: string): string {
   const header = "## Original task (source of truth)\n\n" + originalTask.trim() + "\n\n---\n\n";
@@ -210,6 +44,7 @@ function prependOriginalTaskToDesign(workDir: string, designContent: string, ori
 async function mergeDesignOutputs(
   workDir: string,
   results: AgentRunResult[],
+  sessionRegistry: CursorSessionRegistry,
   originalTask?: string,
   skillsRoot?: string,
   pipelineId?: string,
@@ -224,7 +59,9 @@ async function mergeDesignOutputs(
       if (content.trim()) {
         designFiles.push({ agent: r.agent, content });
       }
-    } catch { /* agent didn't produce a per-agent design file */ }
+    } catch {
+      /* agent didn't produce a per-agent design file */
+    }
   }
 
   if (designFiles.length === 0) {
@@ -233,7 +70,9 @@ async function mergeDesignOutputs(
       if (content.trim()) {
         designFiles.push({ agent: "design", content });
       }
-    } catch { /* no design output at all */ }
+    } catch {
+      /* no design output at all */
+    }
   }
 
   const writeDesign = async (content: string) => {
@@ -248,16 +87,15 @@ async function mergeDesignOutputs(
     return;
   }
 
-  // R5: Try agent-based merge first (reads full files from disk, no truncation)
   if (skillsRoot && pipelineId && originalTask) {
+    const bigBossSession = await sessionRegistry.getOrCreate("bigboss");
     const agentMerged = await mergeDesignWithAgent(
-      workDir, designFiles, originalTask, skillsRoot, pipelineId, signal,
+      workDir, designFiles, originalTask, skillsRoot, pipelineId, signal, bigBossSession,
     );
     if (agentMerged) return;
     createLogger("orchestrator").info("Agent-based merge failed, falling back to API merge", undefined, "flow");
   }
 
-  // Fallback: OpenAI API merge (truncated)
   if (process.env.OPENAI_API_KEY) {
     try {
       const { default: OpenAI } = await import("openai");
@@ -299,450 +137,12 @@ async function mergeDesignOutputs(
   createLogger("orchestrator").info(`Concatenated ${designFiles.length} design documents`, undefined, "flow");
 }
 
-function buildBigBossUserMessage(prompt: string, workDir: string, archBrief?: string): string {
-  const brief = buildContextBrief("planning", workDir);
-  const parts: string[] = [`## Task\n${prompt}`];
-
-  if (archBrief) {
-    parts.push(`## Architecture Brief (cached)\n${archBrief.slice(0, 3000)}`);
-  } else {
-    if (brief.fileTree) parts.push(`## Codebase\nTech: ${brief.techStack}\n\`\`\`\n${brief.fileTree}\n\`\`\``);
-    if (brief.projectFiles) parts.push(`## Project Files\n${brief.projectFiles}`);
-  }
-  if (brief.gitHistory) parts.push(`## Recent Commits\n\`\`\`\n${brief.gitHistory}\n\`\`\``);
-
-  return parts.join("\n\n");
-}
-
-async function planWithOpenAI(
-  prompt: string,
-  workDir: string,
-  archBrief?: string,
-  pipelineMode: PipelineMode = "auto",
-): Promise<BigBossResult | null> {
-  try {
-    const { default: OpenAI } = await import("openai");
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-    const userMessage = buildBigBossUserMessage(prompt, workDir, archBrief);
-    const hasContext = userMessage.includes("## Codebase") || userMessage.includes("## Architecture Brief");
-    const useFullFormat = hasContext || pipelineMode === "auto";
-    const systemPrompt = useFullFormat ? BIGBOSS_CONTEXT_BROKER_PROMPT : BIGBOSS_ROUTING_PROMPT;
-    const maxTokens = useFullFormat ? 1024 : 128;
-
-    const model = getBigBossModel();
-    const start = Date.now();
-    const response = await client.chat.completions.create({
-      model,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userMessage },
-      ],
-      max_tokens: maxTokens,
-      temperature: 0.1,
-      response_format: { type: "json_object" },
-    });
-
-    const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-    const content = response.choices[0]?.message?.content;
-    if (!content) return null;
-
-    const parsed = JSON.parse(content);
-    createLogger("bigboss").info(`OpenAI ${useFullFormat ? "context broker" : "routing"} (${model}) in ${elapsed}s`, { stages: parsed.stages, complexity: parsed.complexity }, "flow");
-    if (parsed.agentBriefs) {
-      for (const [agent, brief] of Object.entries(parsed.agentBriefs)) {
-        createLogger("bigboss").debug(`Agent brief for ${agent}: ${(brief as string).slice(0, 100)}...`);
-      }
-    }
-
-    return parseBigBossResponse(parsed);
-  } catch (err) {
-    createLogger("bigboss").warn("OpenAI call failed", { err: String(err) }, "error");
-    return null;
-  }
-}
-
-async function planWithAgentCli(
-  prompt: string,
-  workDir: string,
-  pipelineId: string,
-): Promise<BigBossResult | null> {
-  try {
-    const fullPrompt = `${BIGBOSS_ROUTING_PROMPT}\n\nTask:\n${prompt}`;
-    const { text, timedOut } = await runPlanner(fullPrompt, workDir, pipelineId, 60_000);
-
-    if (timedOut) {
-      createLogger("bigboss").warn("CLI timed out, falling back to full pipeline", undefined, "status");
-      return null;
-    }
-
-    const jsonMatch = text.match(/\{[\s\S]*"stages"[\s\S]*\}/);
-    if (!jsonMatch) {
-      createLogger("bigboss").warn("No JSON found in CLI output");
-      return null;
-    }
-
-    return parseBigBossResponse(JSON.parse(jsonMatch[0]));
-  } catch (err) {
-    createLogger("bigboss").warn("CLI planning failed", { err: String(err) }, "error");
-    return null;
-  }
-}
-
-function parseFullFormatStages(parsed: Record<string, unknown>): BigBossResult | null {
-  const rawStages = parsed.stages as Array<{ name?: string; parallel?: boolean; agents?: Array<{ type?: string; context?: { focus?: string } }> }>;
-  if (!Array.isArray(rawStages) || rawStages.length === 0) return null;
-  const first = rawStages[0];
-  if (!first || !Array.isArray(first.agents) || first.agents.length === 0) return null;
-
-  const complexity = (["trivial", "moderate", "complex"].includes(parsed.complexity as string)
-    ? parsed.complexity
-    : "moderate") as BigBossResult["complexity"];
-
-  const stageGroups: RuntimeStageGroup[] = [];
-  const ordered: StageDefinition[] = [];
-  const agentBriefs: Record<string, string> = {};
-
-  for (const stage of rawStages) {
-    const agents = stage.agents;
-    if (!Array.isArray(agents) || agents.length === 0) continue;
-
-    const stageDefs: StageDefinition[] = [];
-    for (const a of agents) {
-      const type = a?.type;
-      if (!type || typeof type !== "string") continue;
-      const def = AGENT_TYPE_TO_DEF[type];
-      if (!def || !skillPackExists(def.agent)) {
-        if (def) createLogger("orchestrator").warn(`Skill pack not found for ${type}, skipping`);
-        continue;
-      }
-      stageDefs.push(def);
-      ordered.push(def);
-      if (a?.context?.focus && typeof a.context.focus === "string") {
-        agentBriefs[def.agent] = a.context.focus;
-      }
-    }
-    if (stageDefs.length === 0) continue;
-
-    const stageName = stage.name && typeof stage.name === "string" ? stage.name : stageDefs[0].name;
-    const parallel = stage.parallel === true && stageDefs.length > 1;
-    stageGroups.push({
-      name: stageName,
-      parallel,
-      agents: stageDefs.map((d) => ({ type: d.agent })),
-      stageDefs,
-    });
-  }
-
-  const hasCoding = ordered.some((s) => s.category === "coding");
-  if (!hasCoding && ordered.length > 0) {
-    const codingDef = skillPackExists("lua-coding") ? AGENT_TYPE_TO_DEF["lua-coding"] : AGENT_TYPE_TO_DEF["coding"];
-    if (codingDef && skillPackExists(codingDef.agent)) {
-      ordered.push(codingDef);
-      stageGroups.push({
-        name: "coding",
-        parallel: false,
-        agents: [{ type: codingDef.agent }],
-        stageDefs: [codingDef],
-      });
-    }
-  }
-
-  if (stageGroups.length === 0) return null;
-
-  createLogger("bigboss").info(`BigBoss full format: ${ordered.map((s) => s.agent).join(" -> ")}`, { complexity, briefCount: Object.keys(agentBriefs).length }, "flow");
-  return { stages: ordered, stageGroups, complexity, agentBriefs, parallelDesign: ordered.filter((s) => s.category === "design").length > 1 };
-}
-
-function parseBigBossResponse(parsed: Record<string, unknown>): BigBossResult | null {
-  if (!Array.isArray(parsed.stages) || parsed.stages.length === 0) return null;
-
-  const first = parsed.stages[0];
-  if (first && typeof first === "object" && first !== null && "agents" in first && Array.isArray((first as { agents?: unknown }).agents)) {
-    const result = parseFullFormatStages(parsed);
-    if (result) return result;
-    createLogger("bigboss").info("Full format parse failed, falling back to simplified", undefined, "flow");
-  }
-
-  const validNames = new Set(["design", "coding", "testing"]);
-  const stageNames = (parsed.stages as string[]).filter((s) => validNames.has(s));
-  if (stageNames.length === 0) return null;
-
-  if (!stageNames.includes("coding")) stageNames.push("coding");
-
-  const complexity = (["trivial", "moderate", "complex"].includes(parsed.complexity as string)
-    ? parsed.complexity
-    : "moderate") as BigBossResult["complexity"];
-
-  const parallelDesign = parsed.parallelDesign === true && complexity === "complex";
-
-  let ordered: StageDefinition[];
-  let effectiveParallel = parallelDesign;
-  if (parallelDesign && stageNames.includes("design")) {
-    const availableDesigners = getAvailableParallelDesigners();
-    if (availableDesigners.length > 1) {
-      ordered = [...availableDesigners, ...FULL_STAGES.filter((d) => d.category !== "design" && stageNames.includes(d.name === "validation" ? "testing" : d.name))];
-    } else {
-      createLogger("bigboss").info(`Only ${availableDesigners.length} designer(s) available, downgrading to sequential`, undefined, "flow");
-      effectiveParallel = false;
-      ordered = [];
-      for (const def of FULL_STAGES) {
-        const lookupName = def.name === "validation" ? "testing" : def.name;
-        if (stageNames.includes(lookupName)) ordered.push(def);
-      }
-    }
-  } else {
-    ordered = [];
-    for (const def of FULL_STAGES) {
-      const lookupName = def.name === "validation" ? "testing" : def.name;
-      if (stageNames.includes(lookupName)) ordered.push(def);
-    }
-  }
-
-  const agentBriefs: Record<string, string> = {};
-  if (parsed.agentBriefs && typeof parsed.agentBriefs === "object") {
-    for (const [key, val] of Object.entries(parsed.agentBriefs as Record<string, unknown>)) {
-      if (typeof val === "string") agentBriefs[key] = val;
-    }
-  }
-
-  const stageGroups = groupStages(ordered, effectiveParallel);
-
-  createLogger("bigboss").info(`BigBoss routed to stages: ${ordered.map((s) => s.name).join(" -> ")}`, { complexity, parallel: effectiveParallel, briefCount: Object.keys(agentBriefs).length }, "flow");
-  return { stages: ordered, stageGroups, complexity, agentBriefs, parallelDesign: effectiveParallel };
-}
-
-async function bigBossSummarize(
-  workDir: string,
-  filename: string,
-  purpose: "design" | "feedback",
-): Promise<string> {
-  let content: string;
-  try {
-    content = await fs.readFile(path.join(workDir, filename), "utf-8");
-  } catch {
-    return `${filename} not found.`;
-  }
-
-  if (!content.trim()) return `${filename} is empty.`;
-
-  if (process.env.OPENAI_API_KEY) {
-    try {
-      const { default: OpenAI } = await import("openai");
-      const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-      const systemPrompt = purpose === "design"
-        ? "You are BigBoss, a pipeline orchestrator. Summarize this design document in 2-3 spoken sentences for a human who will decide whether to approve it. Mention what will be built, roughly how many files/components, and key architectural choices. Be concise."
-        : "You are BigBoss, a pipeline orchestrator. Summarize these coding feedback notes in 1-2 spoken sentences for a human. Focus on deviations from the design and any issues found. Be concise.";
-
-      const model = getBigBossModel();
-      const start = Date.now();
-      const response = await client.chat.completions.create({
-        model,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: content.slice(0, 4000) },
-        ],
-        max_tokens: 256,
-        temperature: 0.3,
-      });
-
-      const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-      const summary = response.choices[0]?.message?.content?.trim();
-      if (summary) {
-        createLogger("bigboss").debug(`Summarized ${filename} in ${elapsed}s (${model})`);
-        return summary;
-      }
-    } catch (err) {
-      createLogger("bigboss").warn(`Summarization failed for ${filename}`, { err: String(err) });
-    }
-  }
-
-  const lines = content.split("\n").filter((l) => l.trim());
-  const preview = lines.slice(0, 6).join(" ").slice(0, 300);
-  return purpose === "design"
-    ? `Design document ready. ${preview}...`
-    : `Coding feedback: ${preview}...`;
-}
-
 async function readDesignPreview(workDir: string): Promise<string> {
   try {
     const content = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
     return content.slice(0, 8000);
   } catch {
     return "";
-  }
-}
-
-const MAX_OVERSEER_DESIGN_ITERATIONS = 2;
-const MAX_OVERSEER_CODE_ITERATIONS = 2;
-
-interface OverseerDesignReviewResult {
-  fit: "ok" | "gaps";
-  gaps?: string[];
-  suggestedSubTask?: { prompt: string };
-}
-
-interface OverseerCodeReviewResult {
-  fit: "ok" | "drift";
-  missingOrWrong?: string[];
-  suggestedSubTask?: { prompt: string };
-}
-
-function parseOverseerJson<T extends { fit: string }>(text: string, validFits: string[]): T | null {
-  const jsonMatch = text.match(/\{[\s\S]*"fit"[\s\S]*\}/);
-  if (!jsonMatch) return null;
-  try {
-    const parsed = JSON.parse(jsonMatch[0]) as T;
-    if (!validFits.includes(parsed.fit)) parsed.fit = validFits[0];
-    return parsed;
-  } catch { return null; }
-}
-
-async function overseerPostDesignReview(
-  workDir: string,
-  originalTask: string,
-  skillsRoot: string,
-  pipelineId: string,
-  signal?: AbortSignal,
-): Promise<OverseerDesignReviewResult | null> {
-  const log = createLogger("overseer");
-
-  const agentPrompt = `Review the DESIGN.md in this workspace against the original user task below.\n\n## Original task\n\n${originalTask}`;
-  try {
-    const config: AgentRunConfig = {
-      agentType: "bigboss",
-      category: "design-review",
-      prompt: agentPrompt,
-      pipelineId,
-      skillsRoot,
-      baseBranch: "main",
-      branch: "overseer-review",
-      workspaceReady: true,
-      trivial: true,
-    };
-
-    log.info("Running Overseer design review as agent", undefined, "flow");
-    const result = await runAgent(config, workDir, undefined, signal);
-    const text = result.parsed.assistantMessage || result.output;
-    const parsed = parseOverseerJson<OverseerDesignReviewResult>(text, ["ok", "gaps"]);
-    if (parsed) {
-      log.info(`Overseer design review (agent): fit=${parsed.fit}, gaps=${(parsed.gaps || []).length}`, undefined, "flow");
-      return parsed;
-    }
-    log.warn("Could not parse Overseer agent JSON, falling back to API", undefined, "flow");
-  } catch (err) {
-    log.warn("Overseer agent design review failed, falling back to API", { err: String(err) }, "flow");
-  }
-
-  if (!process.env.OPENAI_API_KEY) return null;
-  try {
-    const content = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
-    const designSlice = content.slice(0, 32000);
-    const { default: OpenAI } = await import("openai");
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    const model = getBigBossModel();
-    const response = await client.chat.completions.create({
-      model,
-      messages: [
-        {
-          role: "system",
-          content: "You are an Overseer reviewing a design document against the user's original task. Decide if the design covers every requirement from the Original task section. Respond with JSON only: { \"fit\": \"ok\" | \"gaps\", \"gaps\": [\"gap1\", \"gap2\"] (if fit is gaps, list missing or underspecified requirements), \"suggestedSubTask\": { \"prompt\": \"focused instructions for designers to address the gaps\" } (optional, if fit is gaps) }. Be concise.",
-        },
-        { role: "user", content: `## Original task\n\n${originalTask.slice(0, 8000)}\n\n## Design document\n\n${designSlice}` },
-      ],
-      max_tokens: 2048,
-      temperature: 0.2,
-      response_format: { type: "json_object" },
-    });
-    const raw = response.choices[0]?.message?.content;
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as OverseerDesignReviewResult;
-    if (parsed.fit !== "ok" && parsed.fit !== "gaps") parsed.fit = "ok";
-    return parsed;
-  } catch (err) {
-    log.warn("Overseer post-design review (API fallback) failed", { err: String(err) }, "flow");
-    return null;
-  }
-}
-
-async function overseerPostCodeReview(
-  workDir: string,
-  originalTask: string,
-  skillsRoot: string,
-  pipelineId: string,
-  signal?: AbortSignal,
-): Promise<OverseerCodeReviewResult | null> {
-  const log = createLogger("overseer");
-
-  const agentPrompt = `Review the implementation in this workspace against the original user task and DESIGN.md.\n\n## Original task\n\n${originalTask}`;
-  try {
-    const config: AgentRunConfig = {
-      agentType: "bigboss",
-      category: "code-review",
-      prompt: agentPrompt,
-      pipelineId,
-      skillsRoot,
-      baseBranch: "main",
-      branch: "overseer-review",
-      workspaceReady: true,
-      trivial: true,
-    };
-
-    log.info("Running Overseer code review as agent", undefined, "flow");
-    const result = await runAgent(config, workDir, undefined, signal);
-    const text = result.parsed.assistantMessage || result.output;
-    const parsed = parseOverseerJson<OverseerCodeReviewResult>(text, ["ok", "drift"]);
-    if (parsed) {
-      log.info(`Overseer code review (agent): fit=${parsed.fit}, issues=${(parsed.missingOrWrong || []).length}`, undefined, "flow");
-      return parsed;
-    }
-    log.warn("Could not parse Overseer agent JSON, falling back to API", undefined, "flow");
-  } catch (err) {
-    log.warn("Overseer agent code review failed, falling back to API", { err: String(err) }, "flow");
-  }
-
-  if (!process.env.OPENAI_API_KEY) return null;
-  try {
-    const designContent = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
-    const designSlice = designContent.slice(0, 32000);
-    const brief = buildContextBrief("code-review", workDir);
-    const fileTree = brief.fileTree || "(no file tree)";
-    const sourceFiles = brief.architecturalFiles || "(no source files read)";
-
-    let codingNotes = "";
-    try {
-      codingNotes = await fs.readFile(path.join(workDir, "CODING_NOTES.md"), "utf-8");
-      codingNotes = codingNotes.slice(0, 4000);
-    } catch { /* no coding notes */ }
-
-    const { default: OpenAI } = await import("openai");
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    const model = getBigBossModel();
-    const response = await client.chat.completions.create({
-      model,
-      messages: [
-        {
-          role: "system",
-          content: "You are an Overseer reviewing implementation against the design and original task. You receive the design document, a file tree, AND the actual content of key source files. Verify that each requirement from the Original task is implemented in the source code, not just that a file exists. Respond with JSON only: { \"fit\": \"ok\" | \"drift\", \"missingOrWrong\": [\"item1\", \"item2\"] (if fit is drift), \"suggestedSubTask\": { \"prompt\": \"focused instructions for the coder to add or fix these items\" } (optional, if fit is drift) }. Be concise.",
-        },
-        {
-          role: "user",
-          content: `## Original task\n\n${originalTask.slice(0, 8000)}\n\n## Design\n\n${designSlice.slice(0, 12000)}\n\n## File tree\n\`\`\`\n${fileTree}\n\`\`\`\n\n## Key source files\n${sourceFiles}${codingNotes ? `\n\n## CODING_NOTES.md\n${codingNotes}` : ""}`,
-        },
-      ],
-      max_tokens: 2048,
-      temperature: 0.2,
-      response_format: { type: "json_object" },
-    });
-    const raw = response.choices[0]?.message?.content;
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as OverseerCodeReviewResult;
-    if (parsed.fit !== "ok" && parsed.fit !== "drift") parsed.fit = "ok";
-    return parsed;
-  } catch (err) {
-    log.warn("Overseer post-code review (API fallback) failed", { err: String(err) }, "flow");
-    return null;
   }
 }
 
@@ -758,7 +158,6 @@ interface ExecVerifyResult {
 
 const LOVE_RUNTIME_VERIFY_TIMEOUT_MS = 10_000;
 
-/** Run LÖVE game briefly; non-zero exit or crash => failed. Timeout => pass (kill process). */
 async function loveRuntimeCheck(
   workDir: string,
   log: ReturnType<typeof createLogger>,
@@ -853,7 +252,9 @@ async function tryRunProject(workDir: string): Promise<ExecVerifyResult | null> 
       } else if (pkg.scripts?.start) {
         command = "npm run start -- --help 2>&1 || true";
       }
-    } catch { /* can't read package.json */ }
+    } catch {
+      /* can't read package.json */
+    }
   }
 
   if (!command) return null;
@@ -879,10 +280,6 @@ async function tryRunProject(workDir: string): Promise<ExecVerifyResult | null> 
     return { passed: false, command, output };
   }
 }
-
-// ---------------------------------------------------------------------------
-// R2: Task decomposition -- break complex coding into sequential sub-tasks
-// ---------------------------------------------------------------------------
 
 const MAX_SUB_TASKS = 3;
 
@@ -939,10 +336,6 @@ Guidelines:
   }
 }
 
-// ---------------------------------------------------------------------------
-// R5: Agent-based design merge -- run full agent to merge design files from disk
-// ---------------------------------------------------------------------------
-
 async function mergeDesignWithAgent(
   workDir: string,
   designFiles: Array<{ agent: string; content: string }>,
@@ -950,6 +343,7 @@ async function mergeDesignWithAgent(
   skillsRoot: string,
   pipelineId: string,
   signal?: AbortSignal,
+  cursorSessionId?: string | null,
 ): Promise<boolean> {
   const log = createLogger("design-merge");
 
@@ -981,6 +375,7 @@ ${originalTask}`;
       branch: "design-merge",
       workspaceReady: true,
       trivial: true,
+      cursorSessionId,
     };
 
     log.info(`Running agent-based design merge for ${designFiles.length} files`, undefined, "flow");
@@ -1008,27 +403,11 @@ ${originalTask}`;
   }
 }
 
-async function planWithBigBoss(
-  prompt: string,
-  workDir: string,
-  pipelineId: string,
-  archBrief?: string,
-  pipelineMode: PipelineMode = "auto",
-): Promise<BigBossResult | null> {
-  if (process.env.OPENAI_API_KEY) {
-    const result = await planWithOpenAI(prompt, workDir, archBrief, pipelineMode);
-    if (result) return result;
-    createLogger("bigboss").info("OpenAI failed, trying agent CLI fallback", undefined, "flow");
-  }
-  return planWithAgentCli(prompt, workDir, pipelineId);
-}
-
 const MAX_DESIGN_LOOPS = 2;
 
 export async function runPipeline(task: RuntimeTask): Promise<void> {
   const skillsRoot = resolveSkillsRoot();
   const upstreamResults: AgentRunResult[] = [];
-  const pid = task.id.slice(0, 8);
   const log = createLogger("orchestrator", task.id);
 
   const abortController = new AbortController();
@@ -1058,7 +437,6 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
     return;
   }
 
-  // Build / refresh the codebase summary cache
   let cacheBrief = "";
   try {
     const brief = buildContextBrief("planning", workDir);
@@ -1069,13 +447,23 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
     log.warn("Context cache build failed (non-fatal)", { err: String(err) });
   }
 
+  const sessionRegistry = createCursorSessionRegistry(workDir, task.id, log);
+  log.info("Cursor agent sessions", { mode: sessionRegistry.getMode() }, "flow");
+
   let stages: StageDefinition[];
   let complexity: "trivial" | "moderate" | "complex" = "moderate";
   let agentBriefs: Record<string, string> = {};
   let planned: BigBossResult | null = null;
 
   if (task.pipelineMode === "auto") {
-    planned = await planWithBigBoss(task.prompt, workDir, task.id, cacheBrief || undefined, task.pipelineMode);
+    planned = await planWithBigBoss(
+      task.prompt,
+      workDir,
+      task.id,
+      cacheBrief || undefined,
+      task.pipelineMode,
+      await sessionRegistry.getOrCreate("bigboss"),
+    );
     if (planned) {
       stages = planned.stages;
       complexity = planned.complexity;
@@ -1121,7 +509,6 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
     const group = stageGroups[groupIndex];
 
     if (group.parallel && group.stageDefs.length > 1) {
-      // --- Parallel stage execution ---
       log.info(`Running ${group.stageDefs.length} stages in parallel: ${group.stageDefs.map((s) => s.name).join(", ")}`, { agents: group.stageDefs.map((s) => s.agent) }, "status");
       taskStore.emit_log(task.id, `Running ${group.stageDefs.length} agents in parallel: ${group.stageDefs.map((s) => s.agent).join(", ")}`);
 
@@ -1137,6 +524,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
         }
 
         const briefKey = stage.agent;
+        const cursorSessionId = await sessionRegistry.getOrCreate(stage.agent);
         const config: AgentRunConfig = {
           ...baseConfig,
           prompt: stagePrompt,
@@ -1147,6 +535,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
           upstreamResults: upstreamResults.length > 0 ? [...upstreamResults] : undefined,
           agentBrief: agentBriefs[briefKey] || agentBriefs[stage.name] || null,
           parallelDesign: isDesignGroup || undefined,
+          cursorSessionId,
         };
 
         return runAgent(config, workDir, (event) => {
@@ -1202,18 +591,23 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
         return;
       }
 
-      // Merge parallel design outputs if this was a design group
       if (group.stageDefs[0]?.category === "design" && group.stageDefs.length > 1) {
         taskStore.emit_log(task.id, `Merging ${group.stageDefs.length} design documents…`);
-        await mergeDesignOutputs(workDir, parallelResults, task.prompt, skillsRoot, task.id, signal);
+        await mergeDesignOutputs(workDir, parallelResults, sessionRegistry, task.prompt, skillsRoot, task.id, signal);
         taskStore.emit_log(task.id, `Merged ${group.stageDefs.length} design documents`);
 
-        // Overseer: post-design review for requirements fit
         taskStore.emit_overseer_log(task.id, "BigBoss (Overseer): reviewing design against requirements…", {
           phase: "design-review",
           status: "running",
         });
-        const designReview = await overseerPostDesignReview(workDir, task.prompt, skillsRoot, task.id, signal);
+        const designReview = await overseerPostDesignReview(
+          workDir,
+          task.prompt,
+          skillsRoot,
+          task.id,
+          await sessionRegistry.getOrCreate("bigboss"),
+          signal,
+        );
         taskStore.emit_overseer_log(
           task.id,
           designReview?.fit === "ok"
@@ -1241,9 +635,8 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
           taskStore.emit_log(task.id, "Overseer design review: design fits requirements.");
         }
 
-        // Design approval after merge
         if (task.requireDesignApproval) {
-          const summary = await bigBossSummarize(workDir, "DESIGN.md", "design");
+          const summary = await bigBossSummarize(workDir, "DESIGN.md", "design", skillsRoot);
           const designPreview = await readDesignPreview(workDir);
           log.info("Design approval requested (post-merge)", undefined, "flow");
 
@@ -1271,7 +664,6 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
         }
       }
     } else {
-      // --- Sequential stage execution (single stage in group) ---
       const stage = group.stageDefs[0];
 
       if (stage.category === "release" && !task.repo) {
@@ -1313,7 +705,6 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
           ? `Target base branch for PR: ${task.baseBranch}. Use this for \`git log ${task.baseBranch}..HEAD\` and \`gh pr create --base ${task.baseBranch}\`.`
           : null;
 
-        // R2: Task decomposition for complex coding tasks
         let subTasks: string[] | null = null;
         if (stage.category === "coding" && complexity === "complex") {
           subTasks = await decomposeTask(workDir, task.prompt);
@@ -1322,6 +713,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
           }
         }
 
+        const cursorSessionId = await sessionRegistry.getOrCreate(stage.agent);
         const config: AgentRunConfig = {
           ...baseConfig,
           prompt: stagePrompt,
@@ -1334,6 +726,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
             ? [...upstreamResults]
             : undefined,
           agentBrief: releaseBrief ?? agentBriefs[briefKey] ?? agentBriefs[stage.agent] ?? null,
+          cursorSessionId,
         };
 
         const progressCallback = (event: { type: string; elapsedSeconds?: number; filesEdited?: number }) => {
@@ -1354,11 +747,11 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
         let usedSubTasks = false;
         if (subTasks && subTasks.length > 1) {
           usedSubTasks = true;
-          // R2: Run sub-tasks sequentially, each building on previous output
           let lastResult: AgentRunResult | null = null;
           for (let i = 0; i < subTasks.length; i++) {
             if (signal.aborted) break;
             taskStore.emit_log(task.id, `Running sub-task ${i + 1}/${subTasks.length}: ${subTasks[i].slice(0, 100)}...`);
+            const subSessionId = await sessionRegistry.getOrCreate(stage.agent);
             const subConfig: AgentRunConfig = {
               ...config,
               prompt: `${task.prompt}\n\n## Current sub-task (${i + 1} of ${subTasks.length})\n\n${subTasks[i]}`,
@@ -1366,6 +759,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
               subTaskIndex: i,
               subTaskTotal: subTasks.length,
               upstreamResults: [...upstreamResults],
+              cursorSessionId: subSessionId,
             };
             lastResult = await runAgent(subConfig, workDir, progressCallback, signal);
             upstreamResults.push(lastResult);
@@ -1412,7 +806,6 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
           taskStore.updateStage(task.id, stage.name, stageUpdate);
           log.info(`Stage ${stage.name} completed: ${result.filesModified?.length ?? 0} files, ${(result.durationMs / 1000).toFixed(1)}s, $${result.estimatedCost?.toFixed(4) ?? "N/A"}`, { stage: stage.name, files: result.filesModified?.length ?? 0, durationMs: result.durationMs, cost: result.estimatedCost }, "output");
 
-          // Prepend original task to DESIGN.md when a single design stage produced it (sequential path)
           if (stage.category === "design" && result.success) {
             try {
               const designPath = path.join(workDir, "DESIGN.md");
@@ -1421,12 +814,13 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
                 content = prependOriginalTaskToDesign(workDir, content, task.prompt);
                 await fs.writeFile(designPath, content, "utf-8");
               }
-            } catch { /* DESIGN.md may not exist yet */ }
+            } catch {
+              /* DESIGN.md may not exist yet */
+            }
           }
 
-          // --- Design approval gate ---
           if (stage.category === "design" && task.requireDesignApproval) {
-            const summary = await bigBossSummarize(workDir, "DESIGN.md", "design");
+            const summary = await bigBossSummarize(workDir, "DESIGN.md", "design", skillsRoot);
             const designPreview = await readDesignPreview(workDir);
             log.info("Design approval requested", undefined, "flow");
 
@@ -1454,13 +848,13 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
             log.info("User approved design", undefined, "flow");
           }
 
-          // --- Coding: lint check ---
           if (stage.category === "coding") {
             const lint = await runLintCheck(workDir);
             if (lint && !lint.passed) {
               log.warn("Lint/build failed, running fix-up pass...", { command: lint.command }, "status");
               taskStore.emit_log(task.id, `Lint check failed (${lint.command}), running fix-up pass...`);
 
+              const fixSessionId = await sessionRegistry.getOrCreate(stage.agent);
               const fixConfig: AgentRunConfig = {
                 ...baseConfig,
                 agentType: stage.agent,
@@ -1470,6 +864,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
                 complexity,
                 prompt: `${task.prompt}\n\nIMPORTANT: The previous coding pass produced lint/build errors. Fix them.\n\nCommand: ${lint.command}\nErrors:\n${lint.output}`,
                 upstreamResults: [...upstreamResults],
+                cursorSessionId: fixSessionId,
               };
 
               const fixResult = await runAgent(fixConfig, workDir, undefined, signal);
@@ -1489,13 +884,13 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
             }
           }
 
-          // --- R3: Execution verification ---
           if (stage.category === "coding" && result.success) {
             const execResult = await tryRunProject(workDir);
             if (execResult && !execResult.passed) {
               log.warn("Execution verification failed, running fix-up pass", { command: execResult.command }, "status");
               taskStore.emit_log(task.id, `Exec verification failed (${execResult.command}), running fix-up pass...`);
 
+              const execFixSessionId = await sessionRegistry.getOrCreate(stage.agent);
               const execFixConfig: AgentRunConfig = {
                 ...baseConfig,
                 agentType: stage.agent,
@@ -1505,6 +900,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
                 complexity,
                 prompt: `${task.prompt}\n\nIMPORTANT: The project failed execution verification. Fix the errors below.\n\nCommand: ${execResult.command}\nErrors:\n${execResult.output}`,
                 upstreamResults: [...upstreamResults],
+                cursorSessionId: execFixSessionId,
               };
 
               const execFixResult = await runAgent(execFixConfig, workDir, undefined, signal);
@@ -1523,13 +919,19 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
             }
           }
 
-          // --- Overseer: post-code review ---
           if (stage.category === "coding" && result.success && codeReviewIterations < MAX_OVERSEER_CODE_ITERATIONS) {
             taskStore.emit_overseer_log(task.id, "BigBoss (Overseer): reviewing code against design and requirements…", {
               phase: "code-review",
               status: "running",
             });
-            const codeReview = await overseerPostCodeReview(workDir, task.prompt, skillsRoot, task.id, signal);
+            const codeReview = await overseerPostCodeReview(
+              workDir,
+              task.prompt,
+              skillsRoot,
+              task.id,
+              await sessionRegistry.getOrCreate("bigboss"),
+              signal,
+            );
             taskStore.emit_overseer_log(
               task.id,
               codeReview?.fit === "ok"
@@ -1543,6 +945,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
               codeReviewIterations++;
               taskStore.emit_log(task.id, `Overseer code review: drift found. Running fix-up pass (${codeReviewIterations}).`);
               log.info("Overseer code review: re-running coder for drift", { missingOrWrong: codeReview.missingOrWrong }, "flow");
+              const overseerFixSessionId = await sessionRegistry.getOrCreate(stage.agent);
               const overseerConfig: AgentRunConfig = {
                 ...baseConfig,
                 prompt: `${task.prompt}\n\n## Overseer code review\n${codeReview.suggestedSubTask.prompt}`,
@@ -1553,6 +956,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
                 complexity,
                 upstreamResults: [...upstreamResults],
                 agentBrief: agentBriefs[stage.agent] ?? null,
+                cursorSessionId: overseerFixSessionId,
               };
               const overseerResult = await runAgent(overseerConfig, workDir, undefined, signal);
               upstreamResults.push(overseerResult);
@@ -1564,16 +968,14 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
             }
           }
 
-          // --- Coding: feedback loop ---
           if (stage.category === "coding") {
             const notes = await readCodingNotes(workDir);
             if (notes) {
               const atCap = designLoops >= MAX_DESIGN_LOOPS;
 
               if (task.requireDesignApproval) {
-                // User-in-the-loop: present feedback for approval
                 if (!atCap) {
-                  const feedbackSummary = await bigBossSummarize(workDir, "CODING_NOTES.md", "feedback");
+                  const feedbackSummary = await bigBossSummarize(workDir, "CODING_NOTES.md", "feedback", skillsRoot);
                   log.info("Presenting coding feedback for review", undefined, "flow");
 
                   const feedbackApproval: ApprovalResponse = await taskStore.requestApproval(
@@ -1610,7 +1012,6 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
                   taskStore.emit_log(task.id, "Feedback loop limit reached. Unaddressed coding feedback recorded in stage notes.");
                 }
               } else {
-                // No approval: automatic criteria-based loop decision
                 const parsed = parseCodingNotes(notes);
                 const criteriaSayLoop = shouldLoopOnFeedback(parsed, feedbackFingerprint);
 
