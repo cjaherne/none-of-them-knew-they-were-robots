@@ -31,6 +31,7 @@ const branchInput = document.getElementById("branchInput");
 const pipelineModeSelect = document.getElementById("pipelineModeSelect");
 const voiceToggle = document.getElementById("voiceToggle");
 const approvalToggle = document.getElementById("approvalToggle");
+const requirementsApprovalToggle = document.getElementById("requirementsApprovalToggle");
 const approvalBanner = document.getElementById("approvalBanner");
 const approvalTitle = document.getElementById("approvalTitle");
 const approvalTypeBadge = document.getElementById("approvalTypeBadge");
@@ -88,6 +89,9 @@ function applyFeatureVisibility() {
   voiceEnabled = savedVoice !== "false";
   voiceToggle.checked = voiceEnabled;
   approvalToggle.checked = localStorage.getItem("approvalEnabled") === "true";
+  if (requirementsApprovalToggle) {
+    requirementsApprovalToggle.checked = localStorage.getItem("requirementsApprovalEnabled") === "true";
+  }
 
   createAdapter();
   syncLogLevel();
@@ -132,6 +136,12 @@ approvalToggle.addEventListener("change", () => {
   localStorage.setItem("approvalEnabled", approvalToggle.checked);
 });
 
+if (requirementsApprovalToggle) {
+  requirementsApprovalToggle.addEventListener("change", () => {
+    localStorage.setItem("requirementsApprovalEnabled", requirementsApprovalToggle.checked);
+  });
+}
+
 // --- Sync desktop ↔ mobile prompt ---
 textInput.addEventListener("input", () => { textInputMobile.value = textInput.value; });
 textInputMobile.addEventListener("input", () => { textInput.value = textInputMobile.value; });
@@ -148,7 +158,43 @@ function handleApprovalRequired(data) {
   approvalSummary.textContent = summary;
   speak(summary);
 
-  if (approvalType === "design") {
+  if (approvalType === "requirements") {
+    approvalTitle.textContent = "Requirements Review";
+    approvalTypeBadge.textContent = "Checklist";
+
+    const preview = data.data?.requirementsPreview || "";
+    if (preview) {
+      approvalPreview.textContent = preview;
+      approvalPreviewBlock.style.display = "";
+    } else {
+      approvalPreviewBlock.style.display = "none";
+    }
+    revisionInputBlock.style.display = "none";
+
+    approvalActions.innerHTML = `
+      <button class="btn-approve" id="actApprove">Approve</button>
+      <button class="btn-revise" id="actRevise">Request Changes</button>
+      <button class="btn-reject" id="actReject">Reject</button>
+    `;
+
+    document.getElementById("actApprove").addEventListener("click", () => {
+      sendApprovalResponse({ approved: true, action: "approve" });
+    });
+    document.getElementById("actRevise").addEventListener("click", () => {
+      if (revisionInputBlock.style.display === "none") {
+        revisionInputBlock.style.display = "";
+        revisionInput.focus();
+        speak("Enter your change request for requirements.");
+      } else {
+        const feedback = revisionInput.value.trim();
+        if (!feedback) { speak("Please describe the changes you want."); return; }
+        sendApprovalResponse({ approved: true, action: "revise", feedback });
+      }
+    });
+    document.getElementById("actReject").addEventListener("click", () => {
+      sendApprovalResponse({ approved: false, action: "reject" });
+    });
+  } else if (approvalType === "design") {
     approvalTitle.textContent = "Design Review";
     approvalTypeBadge.textContent = "BigBoss";
 
@@ -279,7 +325,8 @@ async function sendTextCommand() {
     const branch = branchInput.value.trim() || undefined;
     const pipelineMode = pipelineModeSelect.value || "full";
     const requireApproval = approvalToggle.checked;
-    Object.assign(params, { repo, workspace, baseBranch, branch, pipelineMode, requireApproval });
+    const requireRequirementsApproval = requirementsApprovalToggle?.checked ?? false;
+    Object.assign(params, { repo, workspace, baseBranch, branch, pipelineMode, requireApproval, requireRequirementsApproval });
   }
 
   try {

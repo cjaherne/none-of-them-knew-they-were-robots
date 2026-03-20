@@ -34,7 +34,7 @@ app.use(express.static(webRoot));
 // --- POST /voice-command ---
 app.post("/voice-command", async (req, res) => {
   try {
-    const { text, audioBase64, repo, workspace, baseBranch, branch, pipelineMode, requireApproval } = req.body;
+    const { text, audioBase64, repo, workspace, baseBranch, branch, pipelineMode, requireApproval, requireRequirementsApproval } = req.body;
 
     let prompt: string | undefined;
     let transcript: string | undefined;
@@ -71,7 +71,15 @@ app.post("/voice-command", async (req, res) => {
       }
     }
 
-    const task = taskStore.createTask(prompt, { repo, workspace, baseBranch, branch, pipelineMode, requireApproval: !!requireApproval });
+    const task = taskStore.createTask(prompt, {
+      repo,
+      workspace,
+      baseBranch,
+      branch,
+      pipelineMode,
+      requireApproval: !!requireApproval,
+      requireRequirementsApproval: !!requireRequirementsApproval,
+    });
 
     log.info(`Task received: ${prompt.slice(0, 120)}`, { taskId: task.id }, "input");
 

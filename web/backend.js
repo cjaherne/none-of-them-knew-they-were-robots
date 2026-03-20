@@ -15,6 +15,7 @@ class BackendAdapter {
       "pipelineMode",
       "branches",
       "requireApproval",
+      "requireRequirementsApproval",
     ]);
     return supported.has(feature);
   }

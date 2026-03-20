@@ -36,6 +36,8 @@ export interface RuntimeTask extends Task {
   branch: string;
   pipelineMode: PipelineMode;
   requireDesignApproval: boolean;
+  /** Pause after REQUIREMENTS.md is written so the user can approve or revise before design/coding. */
+  requireRequirementsApproval: boolean;
   stages: StageStatus[];
 }
 
@@ -51,7 +53,15 @@ class TaskStore {
 
   createTask(
     prompt: string,
-    opts: { repo?: string; workspace?: string; baseBranch?: string; branch?: string; pipelineMode?: PipelineMode; requireApproval?: boolean } = {},
+    opts: {
+      repo?: string;
+      workspace?: string;
+      baseBranch?: string;
+      branch?: string;
+      pipelineMode?: PipelineMode;
+      requireApproval?: boolean;
+      requireRequirementsApproval?: boolean;
+    } = {},
   ): RuntimeTask {
     const now = new Date().toISOString();
     const id = uuid();
@@ -67,6 +77,7 @@ class TaskStore {
       branch,
       pipelineMode,
       requireDesignApproval: opts.requireApproval ?? false,
+      requireRequirementsApproval: opts.requireRequirementsApproval ?? false,
       requiresApproval: false,
       createdAt: now,
       updatedAt: now,

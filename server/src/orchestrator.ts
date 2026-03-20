@@ -29,6 +29,12 @@ import {
   type BigBossResult,
 } from "./bigboss-director";
 import {
+  generateRequirementsArtifact,
+  appendRequirementsUserRevision,
+  ensureDesignReferencesRequirements,
+  runLoveSmokeChecklistOpenAI,
+} from "./requirements-artifact";
+import {
   FULL_STAGES,
   RELEASE_STAGE,
   stagesForMode,
@@ -354,10 +360,12 @@ async function tryRunProject(workDir: string): Promise<ExecVerifyResult | null> 
 }
 
 const MAX_SUB_TASKS = 3;
+const MAX_REQUIREMENTS_APPROVAL_LOOPS = 5;
 
 async function decomposeTask(
   workDir: string,
   originalTask: string,
+  stack: PipelineStack,
 ): Promise<string[] | null> {
   if (!process.env.OPENAI_API_KEY) return null;
   const log = createLogger("task-decomp");
@@ -365,17 +373,29 @@ async function decomposeTask(
   try {
     const designContent = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
     const designSlice = designContent.slice(0, 16000);
+    let requirementsSlice = "";
+    try {
+      requirementsSlice = (await fs.readFile(path.join(workDir, "REQUIREMENTS.md"), "utf-8")).slice(0, 4000);
+    } catch {
+      /* optional */
+    }
 
     const { default: OpenAI } = await import("openai");
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const model = getBigBossModel();
 
-    const response = await client.chat.completions.create({
-      model,
-      messages: [
-        {
-          role: "system",
-          content: `You decompose complex game/application tasks into ${MAX_SUB_TASKS} sequential coding sub-tasks. Each sub-task builds on the previous one's output. The coder receives the full DESIGN.md on disk, so do not repeat the design -- just specify what to implement in each pass.
+    const loveSystem = `You decompose complex LÖVE2D / Lua game tasks into ${MAX_SUB_TASKS} sequential coding sub-tasks. Each sub-task builds on the previous one's output. The coder receives the full DESIGN.md (and REQUIREMENTS.md if present) on disk — specify what to implement each pass, do not paste the whole design.
+
+Respond with JSON: { "subTasks": ["task 1 instructions", "task 2 instructions", "task 3 instructions"] }
+
+LÖVE ordering (gameplay before chrome):
+- Sub-task 1: Session/bootstrap (love.load/update/draw shell), persistence if REQUIREMENTS or task ask for cross-run scores (love.filesystem), minimal menu/scene flow, **primary input locomotion + aim** so the player character moves reliably before hybrid/extra schemes, one weapon or minimal combat stub — must be playable.
+- Sub-task 2: Map / procedural rules, weapons, damage, turns or core loop, second-player input if required by design.
+- Sub-task 3: HUD, polish, distinct readability for projectiles/characters (sprites, VFX, trails), extra input modes only after primary mode works.
+
+Each sub-task must leave the game runnable. Reference DESIGN.md on disk for detail.`;
+
+    const webSystem = `You decompose complex game/application tasks into ${MAX_SUB_TASKS} sequential coding sub-tasks. Each sub-task builds on the previous one's output. The coder receives the full DESIGN.md on disk, so do not repeat the design -- just specify what to implement in each pass.
 
 Respond with JSON: { "subTasks": ["task 1 instructions", "task 2 instructions", "task 3 instructions"] }
 
@@ -384,11 +404,23 @@ Guidelines:
 - Sub-task 2: Main gameplay/feature implementation, entities, game logic, UI screens  
 - Sub-task 3: Polish -- audio, visual effects, edge cases, input handling refinement, final integration
 - Each sub-task must be self-contained and produce working code
-- Reference the DESIGN.md for details (the coder will read it from disk)`,
+- Reference the DESIGN.md for details (the coder will read it from disk)`;
+
+    const userParts = [`## Original task\n\n${originalTask.slice(0, 6000)}`, `## Design summary\n\n${designSlice}`];
+    if (requirementsSlice.trim()) {
+      userParts.push(`## REQUIREMENTS.md (excerpt)\n\n${requirementsSlice}`);
+    }
+
+    const response = await client.chat.completions.create({
+      model,
+      messages: [
+        {
+          role: "system",
+          content: stack === "love" ? loveSystem : webSystem,
         },
         {
           role: "user",
-          content: `## Original task\n\n${originalTask.slice(0, 6000)}\n\n## Design summary\n\n${designSlice}`,
+          content: userParts.join("\n\n"),
         },
       ],
       max_tokens: 2048,
@@ -521,6 +553,49 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
 
   const sessionRegistry = createCursorSessionRegistry(workDir, task.id, log);
   log.info("Cursor agent sessions", { mode: sessionRegistry.getMode() }, "flow");
+
+  await generateRequirementsArtifact(workDir, task.prompt);
+  taskStore.emit_log(task.id, "Generated REQUIREMENTS.md from the task prompt.");
+
+  if (task.requireRequirementsApproval) {
+    for (let reqLoop = 0; ; reqLoop++) {
+      if (reqLoop >= MAX_REQUIREMENTS_APPROVAL_LOOPS) {
+        taskStore.updateTaskStatus(task.id, TaskStatus.Failed, "Requirements approval: max revision rounds exceeded");
+        taskStore.cleanupAbort(task.id);
+        return;
+      }
+      let requirementsPreview = "";
+      try {
+        requirementsPreview = (await fs.readFile(path.join(workDir, "REQUIREMENTS.md"), "utf-8")).slice(0, 8000);
+      } catch {
+        requirementsPreview = "(REQUIREMENTS.md missing)";
+      }
+      const summary = "Review extracted requirements before design and coding. Approve to continue, request changes to append your notes to REQUIREMENTS.md, or reject to stop the pipeline.";
+      const approval = await taskStore.requestApproval(task.id, summary, {
+        approvalType: "requirements",
+        requirementsPreview,
+      });
+
+      if (signal.aborted) {
+        taskStore.cleanupAbort(task.id);
+        return;
+      }
+
+      if (!approval.approved || approval.action === "reject") {
+        taskStore.updateTaskStatus(task.id, TaskStatus.Failed, "Requirements rejected by user");
+        taskStore.cleanupAbort(task.id);
+        return;
+      }
+
+      if (approval.action === "revise" && approval.feedback?.trim()) {
+        await appendRequirementsUserRevision(workDir, approval.feedback);
+        taskStore.emit_log(task.id, "REQUIREMENTS.md updated from your revision notes.");
+        continue;
+      }
+
+      break;
+    }
+  }
 
   let stages: StageDefinition[];
   let complexity: "trivial" | "moderate" | "complex" = "moderate";
@@ -719,6 +794,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
         taskStore.emit_log(task.id, `Merging ${group.stageDefs.length} design documents…`);
         await mergeDesignOutputs(workDir, parallelResultsOrdered, sessionRegistry, task.prompt, skillsRoot, task.id, signal);
         taskStore.emit_log(task.id, `Merged ${group.stageDefs.length} design documents`);
+        await ensureDesignReferencesRequirements(workDir);
 
         taskStore.emit_overseer_log(task.id, "BigBoss (Overseer): design review — comparing merged design to requirements…", {
           phase: "design-review",
@@ -865,7 +941,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
 
         let subTasks: string[] | null = null;
         if (stage.category === "coding" && complexity === "complex") {
-          subTasks = await decomposeTask(workDir, task.prompt);
+          subTasks = await decomposeTask(workDir, task.prompt, pipelineStack);
           if (subTasks) {
             taskStore.emit_log(task.id, `Complex task decomposed into ${subTasks.length} sub-tasks`);
           }
@@ -975,6 +1051,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
             } catch {
               /* DESIGN.md may not exist yet */
             }
+            await ensureDesignReferencesRequirements(workDir);
           }
 
           if (stage.category === "design" && task.requireDesignApproval) {
@@ -1185,6 +1262,25 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
               }
             } else if (codeReview?.fit === "ok") {
               taskStore.emit_log(task.id, "Overseer code review: implementation fits design and task.");
+            }
+          }
+
+          if (
+            stage.category === "coding" &&
+            result.success &&
+            pipelineStack === "love" &&
+            process.env.LOVE_SMOKE_CHECKLIST === "1"
+          ) {
+            const smoke = await runLoveSmokeChecklistOpenAI(workDir, task.prompt);
+            if (smoke) {
+              taskStore.emit_log(
+                task.id,
+                `LÖVE smoke checklist: ${JSON.stringify({
+                  movementOk: smoke.movementOk,
+                  persistenceOk: smoke.persistenceOk,
+                  issues: smoke.issues,
+                })}`,
+              );
             }
           }
 
