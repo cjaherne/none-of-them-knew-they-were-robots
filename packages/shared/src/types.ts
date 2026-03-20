@@ -72,7 +72,7 @@ export interface AgentRegistry {
   agents: AgentRegistryEntry[];
 }
 
-// --- CRD-aligned types (mirror the K8s custom resources in TypeScript) ---
+// --- Pipeline and task shapes (orchestration / UI) ---
 
 export interface PipelineStageAgent {
   type: string;

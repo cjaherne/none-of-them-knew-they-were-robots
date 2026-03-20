@@ -20,12 +20,7 @@ function speak(text) {
 // --- DOM refs ---
 const sidebarToggle = document.getElementById("sidebarToggle");
 const sidebar = document.getElementById("sidebar");
-const backendSelect = document.getElementById("backendSelect");
 const localUrl = document.getElementById("localUrl");
-const localUrlGroup = document.getElementById("localUrlGroup");
-const cloudRestUrl = document.getElementById("cloudRestUrl");
-const cloudWsUrl = document.getElementById("cloudWsUrl");
-const cloudUrlGroup = document.getElementById("cloudUrlGroup");
 const localConfig = document.getElementById("localConfig");
 const textInput = document.getElementById("textInput");
 const textInputMobile = document.getElementById("textInputMobile");
@@ -69,33 +64,20 @@ const historyDetailLogs = document.getElementById("historyDetailLogs");
 
 // --- Adapter creation ---
 function createAdapter() {
-  const type = backendSelect.value; // "local" | "cloud"
-  if (type === "cloud") {
-    const restBase = cloudRestUrl.value.trim() || "https://localhost";
-    const ws = cloudWsUrl.value.trim() || "";
-    adapter = new BackendAdapter("cloud", restBase, ws);
-  } else {
-    const base = localUrl.value.trim() || window.location.origin;
-    adapter = new BackendAdapter("local", base);
-  }
+  const base = localUrl.value.trim() || window.location.origin;
+  adapter = new BackendAdapter(base);
   applyFeatureVisibility();
 }
 
 function applyFeatureVisibility() {
   if (!adapter) return;
-  const isLocal = adapter.type === "local";
-  localConfig.style.display = isLocal ? "" : "none";
+  localConfig.style.display = "";
   cancelBtn.style.display = "none"; // always hidden until a task is running
 }
 
 // --- Init ---
 (function init() {
-  const savedBackend = localStorage.getItem("backend") || "local";
-  backendSelect.value = savedBackend;
   localUrl.value = localStorage.getItem("localUrl") || "";
-  cloudRestUrl.value = localStorage.getItem("cloudRestUrl") || "";
-  cloudWsUrl.value = localStorage.getItem("cloudWsUrl") || "";
-  toggleBackendFields(savedBackend);
 
   workspaceInput.value = localStorage.getItem("workspace") || "";
   repoInput.value = localStorage.getItem("repo") || "";
@@ -111,40 +93,13 @@ function applyFeatureVisibility() {
   syncLogLevel();
 })();
 
-function toggleBackendFields(type) {
-  if (type === "cloud") {
-    localUrlGroup.style.display = "none";
-    cloudUrlGroup.style.display = "";
-  } else {
-    localUrlGroup.style.display = "";
-    cloudUrlGroup.style.display = "none";
-  }
-}
-
 // --- Settings / persistence ---
 sidebarToggle.addEventListener("click", () => {
   sidebar.classList.toggle("mobile-open");
 });
 
-backendSelect.addEventListener("change", () => {
-  const val = backendSelect.value;
-  localStorage.setItem("backend", val);
-  toggleBackendFields(val);
-  createAdapter();
-});
-
 localUrl.addEventListener("change", () => {
   localStorage.setItem("localUrl", localUrl.value.trim());
-  createAdapter();
-});
-
-cloudRestUrl.addEventListener("change", () => {
-  localStorage.setItem("cloudRestUrl", cloudRestUrl.value.trim());
-  createAdapter();
-});
-
-cloudWsUrl.addEventListener("change", () => {
-  localStorage.setItem("cloudWsUrl", cloudWsUrl.value.trim());
   createAdapter();
 });
 
@@ -336,9 +291,8 @@ async function sendTextCommand() {
     addLogEntry(`Task ${result.taskId.slice(0, 8)}... queued`, "pending", null);
   } catch (err) {
     addLogEntry(`Error: ${err.message}`, "error");
-    statusEl.textContent = adapter.type === "local"
-      ? "Connection failed -- is the test harness running?"
-      : `Error: ${err.message}`;
+    statusEl.textContent =
+      "Connection failed -- is the test harness running?";
   } finally {
     sendBtn.disabled = false;
     sendBtnMobile.disabled = false;
@@ -476,9 +430,8 @@ async function handleRecordingFallback() {
       addLogEntry(`Task ${result.taskId.slice(0, 8)}... queued (voice)`, "pending", null);
     } catch (err) {
       addLogEntry(`Error: ${err.message}`, "error");
-      statusEl.textContent = adapter.type === "local"
-        ? "Connection failed -- is the test harness running?"
-        : `Error: ${err.message}`;
+      statusEl.textContent =
+        "Connection failed -- is the test harness running?";
     }
   };
   reader.readAsDataURL(blob);

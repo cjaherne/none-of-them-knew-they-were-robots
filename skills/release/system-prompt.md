@@ -27,7 +27,6 @@ Execute these steps in order. Stop and report if any step fails.
    - `pom.xml` — Maven: update `<project><version>` (do NOT change `<parent><version>` or dependency versions)
    - `Cargo.toml` — Rust: update `[package] version = "..."`
    - `pyproject.toml` — Python: update `[project] version = "..."`
-   - `Chart.yaml` — Helm: update the top-level `version:` field
    - `build.gradle` or `build.gradle.kts` — Gradle: update the `version` property
 2. If no known version file exists, skip this step and note in the commit/PR body that no version file was found.
 3. Determine the semver bump from the branch's commits:
