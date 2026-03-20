@@ -936,7 +936,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
 
         const briefKey = stage.agent;
         const releaseBrief = stage.category === "release"
-          ? `Target base branch for PR: ${task.baseBranch}. Use this for \`git log ${task.baseBranch}..HEAD\` and \`gh pr create --base ${task.baseBranch}\`.`
+          ? `Release stage = **merge-to-main** workflow: pipeline branch is \`${task.branch}\`; merge target (base) is \`${task.baseBranch}\`. Use \`git log ${task.baseBranch}..HEAD\`, \`gh pr create --base ${task.baseBranch}\`, then \`gh pr merge --squash --delete-branch\`, then checkout ${task.baseBranch}, pull, annotated tag \`v<version>\` on mainline, push tag. Run \`npm run build\` (or project build) after push and before PR. Do not stop at an open PR — complete merge and tag per \`skills/release/system-prompt.md\`.`
           : null;
 
         let subTasks: string[] | null = null;

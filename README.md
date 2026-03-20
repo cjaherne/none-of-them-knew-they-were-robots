@@ -28,7 +28,7 @@ Speak or type a task, and specialist agents — designers, coders, testers — c
 | **Design** | LÖVE Architect / LÖVE UX | Lua modules, scenes/HUD (LÖVE games) | Filesystem, Fetch (Architect also GitHub) |
 | **Coding** | Coding / Lua coding | Web vs LÖVE implementation | Filesystem, GitHub, Fetch |
 | **Validation** | Testing / LÖVE testing | Web tests vs busted / `love .` smoke | Filesystem, Playwright, Fetch |
-| **Release** | Release Agent | README, SemVer, tags, PR | Filesystem, GitHub |
+| **Release** | Release Agent | Same workflow as **merge-to-main**: README, SemVer, push, **build**, PR, **squash-merge**, tag on `main` | Filesystem, GitHub |
 
 BigBoss selects stage agents, runs the Overseer after design merge and after coding, and can trigger focused re-runs. **Design gaps** (post-merge design review) may re-run only the parallel designers listed in **`gapsByAgent`** when that set is a proper subset of the group; otherwise all parallel designers re-run. That is separate from **code drift** (post-coding review), which triggers a **single coding** fix-up (with optional **`focusPaths`**) and may run **one follow-up** code review if iteration budget allows — it does **not** re-run designers. LÖVE stacks get extra Overseer checklists. If **love-testing** fails, the orchestrator can run a bounded **lua-coding** fix-up and retry validation. The **Release** agent runs at the end of a successful pipeline when a repo is configured.
 
@@ -107,7 +107,7 @@ flowchart TD
   SK -->|yes| SM[Optional smoke JSON log]
   SK -->|no| T[Testing stage]
   SM --> T
-  T --> RL[Release if repo configured]
+  T --> RL[Release: build PR merge squash tag on main]
 ```
 
 ### Parallel design merge and Overseer
@@ -199,7 +199,7 @@ Structured logs and task history use SQLite at **`server/data/logs.db`**. Notabl
 
 ## How it works
 
-The server loads skill packs from `skills/` (or `SKILLS_ROOT`), prepares the workspace (clone/checkout optional), writes Cursor rules and MCP config into the workspace, builds **per-stage prompts** in [`agent-runner`](server/src/agent-runner.ts), and runs the **Cursor Agent CLI** (`agent`, or `CURSOR_CLI`). BigBoss planning and Overseer reviews use the same persona file [`skills/bigboss/system-prompt.md`](skills/bigboss/system-prompt.md) where applicable. When a **git repo** is configured, successful pipelines **push** the branch and the **release** agent can bump version, commit, tag, and open a PR. See **Workflow and agent interactions** above for the full stage diagram.
+The server loads skill packs from `skills/` (or `SKILLS_ROOT`), prepares the workspace (clone/checkout optional), writes Cursor rules and MCP config into the workspace, builds **per-stage prompts** in [`agent-runner`](server/src/agent-runner.ts), and runs the **Cursor Agent CLI** (`agent`, or `CURSOR_CLI`). BigBoss planning and Overseer reviews use the same persona file [`skills/bigboss/system-prompt.md`](skills/bigboss/system-prompt.md) where applicable. When a **git repo** is configured, the **release** stage runs the **merge-to-main** flow: README + SemVer, push, **`npm run build`**, `gh pr create`, **`gh pr merge --squash --delete-branch`**, then an annotated **tag on `main`**. See **Workflow and agent interactions** above for the full stage diagram.
 
 ## Development
 

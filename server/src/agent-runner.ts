@@ -416,19 +416,22 @@ Write tests to disk and execute them; summarize results and gaps.
 
 const PREAMBLE_RELEASE = `
 You are running as a local CLI agent with full file-system and git access.
-Your role in this pipeline is RELEASE PREP — prepare the branch for a Pull Request.
+Your role is the **Release** stage: follow the same **merge-to-main** workflow as
+the project's Cursor skill (see \`skills/release/system-prompt.md\` on disk — pre-flight,
+README, semver bump, one release-prep commit, push, **build must pass**, PR, **merge**, tag on base).
 
-You must:
-1. Update the README based on the branch's changes
-2. Bump the version in the appropriate version file (package.json, pom.xml, Cargo.toml, pyproject.toml, Chart.yaml, or build.gradle) using SemVer
-3. Commit all changes with a conventional commit message
-4. Push the branch
-5. Create and push a tag for the new version after pushing the branch
-6. Create a PR to the base branch using \`gh pr create\`
+Execute in order:
+1. **Pre-flight:** \`git status\`; \`git branch --show-current\` — you must NOT be on the base branch (e.g. main). \`git log <BASE_BRANCH>..HEAD\` for PR/README context.
+2. **README** — integrate this branch's changes naturally (no raw changelog dump).
+3. **Version** — bump SemVer in the primary version file (root package.json when present, else pom/Cargo/pyproject/etc.).
+4. **Commit** — conventional commit with body; mention old → new version.
+5. **Push** — \`git push -u origin HEAD\`
+6. **Build** — \`npm run build\` from repo root when applicable, or the project's build; fix failures before continuing.
+7. **PR** — \`gh pr create --base <BASE_BRANCH>\` with Summary / Changes / Version / Test plan sections (see release skill).
+8. **Merge** — \`gh pr merge --squash --delete-branch\` (do not leave the PR open by default).
+9. **Tag on base** — \`git checkout <BASE_BRANCH> && git pull\`, then \`git tag -a v<version> -m "..."\`, \`git push origin v<version>\`.
 
-The BASE_BRANCH for the PR is provided in the task context below. Use it for \`git log <BASE_BRANCH>..HEAD\` and \`gh pr create --base <BASE_BRANCH>\`.
-
-Do NOT merge the PR. Create and push a tag for the new version after pushing the branch.
+The BASE_BRANCH and pipeline branch are in the task context below. Never force-push to main. Report PR URL, version, tag, and summary when done.
 `.trim();
 
 const PREAMBLE_DESIGN_REVIEW = `

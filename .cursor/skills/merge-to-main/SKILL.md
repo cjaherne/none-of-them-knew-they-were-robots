@@ -7,6 +7,8 @@ description: Automates the full release workflow when the user says "merge to ma
 
 End-to-end release workflow that takes the current feature branch through to a tagged merge on `main`.
 
+**Pipeline parity:** The **Release** stage in the agent server uses the same steps. Its instructions live in [`skills/release/system-prompt.md`](../../skills/release/system-prompt.md) and the orchestrator injects a matching brief. When you change this skill, update that file (and [`server/src/agent-runner.ts`](../../server/src/agent-runner.ts) `PREAMBLE_RELEASE` if the short checklist diverges).
+
 ## Trigger phrases
 
 - "merge to main"
