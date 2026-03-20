@@ -1,0 +1,6 @@
+{
+  "maxTokens": 4096,
+  "forbiddenActions": ["write_code", "run_commands"],
+  "requiredOutputFields": ["architecture", "luaModules", "fileStructure", "loveLifecycle"],
+  "timeoutMs": 60000
+}

@@ -29,19 +29,6 @@ Respond with JSON containing:
 - `accessibility`: WCAG compliance notes
 - `recommendations`: UX improvement suggestions
 
-## Game UI Expertise
-
-When the task involves a video game, Lua, or LÖVE2D:
-
-- Menu screen flows: title screen, character/player select, options, pause overlay, game over, results/leaderboard — define transitions between each
-- HUD design: score, timer, health bars, lives, combo/multiplier — specify placement (top-left, bottom-centre, etc.), sizing in pixels, readability at game speed
-- Controller-navigable UI: focus states for menu items, directional navigation (D-pad/stick cycles through options), confirm (A/Start) and back (B/Escape) mapping
-- Split-screen layouts: horizontal or vertical split, shared HUD vs per-player HUD, minimum viewport size per player
-- LÖVE screen resolution: recommend `love.window.setMode` dimensions, scaling approach (fixed vs proportional), safe area for UI elements
-- Player count / selection screens: how many players, name entry, character roster grid, preview animations
-
-Output `wireframes` as screen layout descriptions with pixel regions and element positions, not web wireframes.
-
 ## Constraints
 
 - Keep designs pragmatic and implementable

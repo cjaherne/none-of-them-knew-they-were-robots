@@ -15,11 +15,14 @@ import {
 import { loadBigBossSystemPromptSync } from "./bigboss-prompt-loader";
 import {
   AGENT_TYPE_TO_DEF,
-  FULL_STAGES,
+  type PipelineStack,
   type RuntimeStageGroup,
   type StageDefinition,
-  getAvailableParallelDesigners,
+  getFullStagesForStack,
+  getLoveParallelDesigners,
+  getWebParallelDesigners,
   groupStages,
+  inferStackFromAgents,
   resolveSkillsRoot,
   skillPackExists,
 } from "./pipeline-stages";
@@ -41,21 +44,25 @@ function skillContextBlock(skillsRoot: string): string {
 }
 
 const BIGBOSS_ROUTING_PROMPT = `You are a pipeline planner. Given a task, decide which pipeline stages are needed and estimate complexity.
-Respond with ONLY a JSON object: { "stages": ["design", "coding", "testing"], "complexity": "trivial" | "moderate" | "complex" }
+Respond with ONLY a JSON object:
+{ "stages": ["design", "coding", "testing"], "complexity": "trivial" | "moderate" | "complex", "stack": "web" | "love" }
 
 Rules:
 - "design" = architecture/planning needed (new features, complex changes)
 - "coding" = implementation needed (code changes, file creation)
 - "testing" = test creation/validation needed
+- "stack": use "love" for LÖVE2D / Lua game projects; use "web" for websites, Node, React, APIs, CLIs (default when unsure)
 - Simple fixes may only need "coding"
 - Documentation tasks may only need "coding"
 - Most new features need all three stages
-- If unsure, include all three
+- If unsure, include all three and default stack to "web"
 
 Complexity guide:
 - "trivial" = one-line fix, rename, typo, config change
 - "moderate" = single-feature addition, small refactor
-- "complex" = multi-file feature, architectural change, new system`;
+- "complex" = multi-file feature, architectural change, new system
+
+Parallel design: when complexity is "complex" and the plan includes "design", you may set "parallelDesign": true to run multiple designers in parallel (optional).`;
 
 const BIGBOSS_CONTEXT_BROKER_PROMPT = `You are BigBoss, a context broker for a multi-agent pipeline. You will receive a task description and a codebase summary. Your job is to produce a pipeline plan using the FULL stage/agent structure.
 
@@ -70,16 +77,21 @@ Respond with ONLY a JSON object:
       ]
     },
     { "name": "coding", "parallel": false, "agents": [{ "type": "coding" or "lua-coding", "context": { "focus": "..." } }] },
-    { "name": "validation", "parallel": false, "agents": [{ "type": "testing", "context": { "focus": "..." } }] }
+    { "name": "validation", "parallel": false, "agents": [{ "type": "testing" or "love-testing", "context": { "focus": "..." } }] }
   ],
   "complexity": "trivial" | "moderate" | "complex",
   "reasoning": "Brief explanation"
 }
 
-Allowed agent types: ux-designer, core-code-designer, graphics-designer, game-designer, coding, lua-coding, testing.
+Allowed agent types:
+- Web/UI design: ux-designer, core-code-designer, graphics-designer
+- LÖVE / Lua game design: game-designer, love-architect, love-ux
+- Implementation: coding (web/Node), lua-coding (LÖVE/Lua games)
+- Validation: testing (web/Node), love-testing (LÖVE/Lua — busted, game smoke checks)
 
-- **Web/UI tasks**: In the design stage (parallel: true) include ux-designer, core-code-designer, graphics-designer. Use coding for the coding stage.
-- **Full videogame / Lua / LÖVE tasks**: Set complexity to "complex". In the design stage (parallel: true) include MULTIPLE designers: game-designer (mechanics, controls, Lua structure), core-code-designer (architecture, modules), ux-designer (menus, HUD, flows), graphics-designer (visual style, art direction). Use lua-coding (not coding) for the coding stage. Do not use only one designer for a full game.
+Rules:
+- **Web/UI tasks**: Design stage (parallel: true): ux-designer, core-code-designer, graphics-designer. Coding: coding. Validation: testing.
+- **LÖVE2D / Lua game tasks**: Set complexity to "complex" when it is a full game or large gameplay feature. Design stage (parallel: true): game-designer, love-architect, love-ux — do not substitute web designers. Coding: lua-coding. Validation: love-testing.
 - Designer agents run in parallel (parallel: true) when there are two or more in the same stage.
 - Each agent must have context.focus with 1-3 sentences (under 300 chars). Reference the task or codebase where helpful.`;
 
@@ -247,7 +259,11 @@ function parseFullFormatStages(parsed: Record<string, unknown>): BigBossResult |
 
   const hasCoding = ordered.some((s) => s.category === "coding");
   if (!hasCoding && ordered.length > 0) {
-    const codingDef = skillPackExists("lua-coding") ? AGENT_TYPE_TO_DEF["lua-coding"] : AGENT_TYPE_TO_DEF["coding"];
+    const stack = inferStackFromAgents(ordered.map((s) => s.agent));
+    const codingDef =
+      stack === "love" && skillPackExists("lua-coding")
+        ? AGENT_TYPE_TO_DEF["lua-coding"]
+        : AGENT_TYPE_TO_DEF["coding"];
     if (codingDef && skillPackExists(codingDef.agent)) {
       ordered.push(codingDef);
       stageGroups.push({
@@ -285,26 +301,34 @@ function parseBigBossResponse(parsed: Record<string, unknown>): BigBossResult | 
     ? parsed.complexity
     : "moderate") as BigBossResult["complexity"];
 
+  const stack: PipelineStack = parsed.stack === "love" ? "love" : "web";
+  const fullStages = getFullStagesForStack(stack);
+
   const parallelDesign = parsed.parallelDesign === true && complexity === "complex";
 
   let ordered: StageDefinition[];
   let effectiveParallel = parallelDesign;
   if (parallelDesign && stageNames.includes("design")) {
-    const availableDesigners = getAvailableParallelDesigners();
+    const availableDesigners = stack === "love" ? getLoveParallelDesigners() : getWebParallelDesigners();
     if (availableDesigners.length > 1) {
-      ordered = [...availableDesigners, ...FULL_STAGES.filter((d) => d.category !== "design" && stageNames.includes(d.name === "validation" ? "testing" : d.name))];
+      ordered = [
+        ...availableDesigners,
+        ...fullStages.filter(
+          (d) => d.category !== "design" && stageNames.includes(d.name === "validation" ? "testing" : d.name),
+        ),
+      ];
     } else {
       createLogger("bigboss").info(`Only ${availableDesigners.length} designer(s) available, downgrading to sequential`, undefined, "flow");
       effectiveParallel = false;
       ordered = [];
-      for (const def of FULL_STAGES) {
+      for (const def of fullStages) {
         const lookupName = def.name === "validation" ? "testing" : def.name;
         if (stageNames.includes(lookupName)) ordered.push(def);
       }
     }
   } else {
     ordered = [];
-    for (const def of FULL_STAGES) {
+    for (const def of fullStages) {
       const lookupName = def.name === "validation" ? "testing" : def.name;
       if (stageNames.includes(lookupName)) ordered.push(def);
     }

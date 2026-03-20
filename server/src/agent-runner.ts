@@ -391,6 +391,24 @@ and framework. Check the available npm scripts for existing test commands.
 Write all test files to disk and execute them.
 `.trim();
 
+const PREAMBLE_LOVE_TESTING = `
+You are running as a local CLI agent with full file-system access.
+Your role in this pipeline is TESTING for a LÖVE2D / Lua project.
+
+A preview of DESIGN.md and upstream context is included below. READ the full
+DESIGN.md from the workspace root. Upstream handoff files are in .pipeline/*.handoff.md.
+
+Your job:
+1. Prefer **busted** for pure Lua modules (game logic, utilities): add spec files
+   under spec/ or *_spec.lua as appropriate; document how to run tests (e.g. busted).
+2. Test logic without the LÖVE runtime where possible; mock or isolate modules that
+   call love.* when needed.
+3. When useful, run \`love .\` briefly to catch startup/runtime errors and report them.
+4. Use your shell tool to install busted or other Lua test tooling if missing.
+
+Write tests to disk and execute them; summarize results and gaps.
+`.trim();
+
 const PREAMBLE_RELEASE = `
 You are running as a local CLI agent with full file-system and git access.
 Your role in this pipeline is RELEASE PREP — prepare the branch for a Pull Request.
@@ -456,7 +474,10 @@ Your job:
 DO NOT modify any files. This is a read-only review.
 `.trim();
 
-function getPreamble(category: string, parallelDesign?: boolean): string {
+function getPreamble(category: string, parallelDesign?: boolean, agentType?: string): string {
+  if (category === "validation" && agentType === "love-testing") {
+    return PREAMBLE_LOVE_TESTING;
+  }
   switch (category) {
     case "planning": return PREAMBLE_PLANNING;
     case "design": return parallelDesign ? PREAMBLE_DESIGN_PARALLEL : PREAMBLE_DESIGN;
@@ -711,7 +732,12 @@ export function buildContextBrief(
 
     case "validation":
       brief.fileTree = getFileTree(workDir);
-      brief.designDoc = getDesignDoc(workDir, upstreamResults?.some((r) => r.agent === "lua-coding") ? 24000 : 6000);
+      brief.designDoc = getDesignDoc(
+        workDir,
+        upstreamResults?.some((r) => r.agent === "lua-coding" || r.agent === "love-testing") || agentType === "love-testing"
+          ? 24000
+          : 6000,
+      );
       brief.testPatterns = getTestPatterns(workDir);
       brief.packageScripts = getPackageScripts(workDir);
       if (upstreamResults) {
@@ -747,7 +773,7 @@ function buildFullPrompt(
     config.category, workDir, config.upstreamResults, config.baseBranch, config.agentBrief, config.agentType,
   );
 
-  let preamble = getPreamble(config.category, config.parallelDesign);
+  let preamble = getPreamble(config.category, config.parallelDesign, config.agentType);
   if (
     config.agentType === "bigboss" &&
     (config.category === "design-review" || config.category === "code-review")

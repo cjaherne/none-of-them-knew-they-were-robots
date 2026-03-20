@@ -17,12 +17,13 @@ Speak or type a task, and specialist agents — designers, coders, testers — c
 | Category | Agents | Role | MCP Tools |
 |----------|--------|------|-----------|
 | **Analysis / Overseer** | BigBoss | Plans pipelines; Overseer reviews (design fit + code drift) | Filesystem, GitHub, Fetch, Sequential Thinking |
-| **Design** | UX Designer | Flows, wireframes, a11y, game UI | Filesystem, Playwright, Fetch |
-| **Design** | Core Code Designer | Architecture, APIs, Lua modules | Filesystem, GitHub, Fetch |
-| **Design** | Graphics Designer | Tokens, game art briefs | Filesystem, Fetch |
-| **Design** | Game Designer | Mechanics, controls, Lua/LÖVE structure | Filesystem, Fetch, Sequential Thinking |
-| **Coding** | Coding / Lua coding | Implementation from specs | Filesystem, GitHub, Fetch |
-| **Validation** | Testing Agent | Tests, E2E, Lua/busted | Filesystem, Playwright, Fetch |
+| **Design** | UX Designer | Web/product flows, wireframes, a11y | Filesystem, Playwright, Fetch |
+| **Design** | Core Code Designer | Web/backend architecture, APIs | Filesystem, GitHub, Fetch |
+| **Design** | Graphics Designer | Visual tokens, CSS, web UI | Filesystem, Fetch |
+| **Design** | Game Designer | Mechanics, controls, LÖVE game structure | Filesystem, Fetch, Sequential Thinking |
+| **Design** | LÖVE Architect / LÖVE UX | Lua modules, scenes/HUD (LÖVE games) | Filesystem, Fetch (Architect also GitHub) |
+| **Coding** | Coding / Lua coding | Web vs LÖVE implementation | Filesystem, GitHub, Fetch |
+| **Validation** | Testing / LÖVE testing | Web tests vs busted / `love .` smoke | Filesystem, Playwright, Fetch |
 | **Release** | Release Agent | README, SemVer, tags, PR | Filesystem, GitHub |
 
 BigBoss selects stage agents, runs the Overseer after design merge and after coding, and can trigger focused re-runs. The **Release** agent runs at the end of a successful pipeline when a repo is configured.

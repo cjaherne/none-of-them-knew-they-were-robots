@@ -146,3 +146,59 @@ alwaysApply: true
   "reasoning": "Pure architectural refactor -- only needs Core Code Designer for the pattern specification. No UI/UX changes involved."
 }
 ```
+
+## Example 4: "Add a two-player versus mode to our LÖVE game"
+
+```json
+{
+  "stages": [
+    {
+      "name": "design",
+      "parallel": true,
+      "agents": [
+        {
+          "type": "game-designer",
+          "context": {
+            "focus": "Define versus rules, win conditions, character or palette assignment per player, and input bindings for P1/P2 (keyboard + optional gamepad)."
+          }
+        },
+        {
+          "type": "love-architect",
+          "context": {
+            "focus": "Specify scene changes for versus flow, shared vs split update loops, and where player state lives (modules under src/). Avoid globals; document require order."
+          }
+        },
+        {
+          "type": "love-ux",
+          "context": {
+            "focus": "HUD for two players: score or lives per corner, pause overlay, versus-ready screen. Pixel layout and safe areas for split view."
+          }
+        }
+      ]
+    },
+    {
+      "name": "implement",
+      "agents": [
+        {
+          "type": "lua-coding",
+          "context": {
+            "focus": "Implement versus mode per merged DESIGN.md: scenes, input, HUD, and game loop changes. Keep modules testable where possible."
+          }
+        }
+      ]
+    },
+    {
+      "name": "validate",
+      "agents": [
+        {
+          "type": "love-testing",
+          "context": {
+            "focus": "Add busted specs for pure logic (scoring, state). Run busted; smoke-test love . for load errors."
+          }
+        }
+      ]
+    }
+  ],
+  "reasoning": "LÖVE game work uses the game + love-architect + love-ux trio in parallel, lua-coding for implementation, and love-testing for Lua-focused validation."
+}
+```

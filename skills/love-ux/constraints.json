@@ -1,0 +1,6 @@
+{
+  "maxTokens": 4096,
+  "forbiddenActions": ["write_code", "run_commands"],
+  "requiredOutputFields": ["userFlows", "wireframes", "interactions", "accessibility"],
+  "timeoutMs": 60000
+}
