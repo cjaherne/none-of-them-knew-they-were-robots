@@ -5,6 +5,7 @@ import * as path from "path";
 import * as os from "os";
 import { createLogger } from "@agents/shared";
 import { loadSkillPack, SkillPack } from "./skill-loader";
+import { loadBigBossSystemPromptSync } from "./bigboss-prompt-loader";
 
 const log = createLogger("agent-runner");
 
@@ -673,7 +674,19 @@ function buildFullPrompt(
     config.category, workDir, config.upstreamResults, config.baseBranch, config.agentBrief, config.agentType,
   );
 
-  parts.push(getPreamble(config.category, config.parallelDesign));
+  let preamble = getPreamble(config.category, config.parallelDesign);
+  if (
+    config.agentType === "bigboss" &&
+    (config.category === "design-review" || config.category === "code-review")
+  ) {
+    const skillMd = loadBigBossSystemPromptSync(config.skillsRoot);
+    if (skillMd) {
+      const cap = 12000;
+      const body = skillMd.length > cap ? `${skillMd.slice(0, cap)}\n\n[…truncated…]` : skillMd;
+      preamble = `${body}\n\n---\n\n${preamble}`;
+    }
+  }
+  parts.push(preamble);
   if (config.parallelDesign && config.category === "design") {
     parts.push(`\nYour agent type is: ${config.agentType}`);
     parts.push(`Write your design output to: .pipeline/${config.agentType}-design.md`);

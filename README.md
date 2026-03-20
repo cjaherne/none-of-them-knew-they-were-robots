@@ -33,11 +33,16 @@ The **same Node process** serves the REST API, **Server-Sent Events** for live t
 Browser  --HTTP-->  Express (API + SSE + static web/)
                          |
                          v
-                   Orchestrator + agent-runner
+              orchestrator (pipeline driver)
                          |
-                         v
-                   Cursor CLI + workspace/git
+         +---------------+---------------+
+         v               v               v
+  bigboss-director   agent-runner    task-store / logs
+  (plan, summarize,   (Cursor CLI      (SQLite + SSE)
+   Overseer reviews)  per specialist)
 ```
+
+**BigBoss in code:** [`server/src/bigboss-director.ts`](server/src/bigboss-director.ts) centralises planning (OpenAI + CLI fallback), human-facing summaries, and Overseer design/code reviews (CLI + API fallback). It prepends the canonical persona from [`skills/bigboss/system-prompt.md`](skills/bigboss/system-prompt.md) to those calls. [`server/src/agent-runner.ts`](server/src/agent-runner.ts) prepends the same file for BigBoss overseer CLI runs. Stage definitions live in [`server/src/pipeline-stages.ts`](server/src/pipeline-stages.ts); [`server/src/orchestrator.ts`](server/src/orchestrator.ts) runs the pipeline loop and specialist stages.
 
 Skill packs are read from `skills/` on disk (`SKILLS_ROOT` overrides the path).
 
