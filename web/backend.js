@@ -1,5 +1,5 @@
 /**
- * Backend adapter for the local test harness (Express + SSE).
+ * Backend adapter for the agent server (Express + SSE).
  */
 
 class BackendAdapter {

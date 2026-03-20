@@ -292,7 +292,7 @@ async function sendTextCommand() {
   } catch (err) {
     addLogEntry(`Error: ${err.message}`, "error");
     statusEl.textContent =
-      "Connection failed -- is the test harness running?";
+      "Connection failed -- is the server running?";
   } finally {
     sendBtn.disabled = false;
     sendBtnMobile.disabled = false;
@@ -431,7 +431,7 @@ async function handleRecordingFallback() {
     } catch (err) {
       addLogEntry(`Error: ${err.message}`, "error");
       statusEl.textContent =
-        "Connection failed -- is the test harness running?";
+        "Connection failed -- is the server running?";
     }
   };
   reader.readAsDataURL(blob);

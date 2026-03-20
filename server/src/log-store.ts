@@ -3,7 +3,7 @@ import * as fs from "fs";
 import Database from "better-sqlite3";
 import type { LogEntry, LogLevel, LogCategory } from "@agents/shared";
 import type { LogTransport } from "@agents/shared";
-import type { MvpTask } from "./local-task-store";
+import type { RuntimeTask } from "./task-store";
 
 const DATA_DIR = path.resolve(__dirname, "..", "data");
 const DB_PATH = path.join(DATA_DIR, "logs.db");
@@ -74,7 +74,7 @@ export class SqliteTransport implements LogTransport {
 
 // -- Task history persistence --
 
-export function saveTaskHistory(task: MvpTask): void {
+export function saveTaskHistory(task: RuntimeTask): void {
   const db = getDb();
   db.prepare(`
     INSERT INTO task_history (id, prompt, status, pipeline_mode, workspace, stages_json, created_at, updated_at, completed_at, result_summary, error)
