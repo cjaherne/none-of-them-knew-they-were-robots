@@ -42,7 +42,7 @@ Browser  --HTTP-->  Express (API + SSE + static web/)
    Overseer reviews)  per specialist)
 ```
 
-**BigBoss in code:** [`server/src/bigboss-director.ts`](server/src/bigboss-director.ts) centralises planning (OpenAI + CLI fallback), human-facing summaries, and Overseer design/code reviews (CLI + API fallback). It prepends the canonical persona from [`skills/bigboss/system-prompt.md`](skills/bigboss/system-prompt.md) to those calls. [`server/src/agent-runner.ts`](server/src/agent-runner.ts) prepends the same file for BigBoss overseer CLI runs, runs `agent create-chat` once per pipeline, and passes `--resume <id>` on BigBoss-shaped CLI invocations so Cursor keeps one server-side chat for the task (disable with `BIGBOSS_PERSIST_CLI=0`). Stage definitions live in [`server/src/pipeline-stages.ts`](server/src/pipeline-stages.ts); [`server/src/orchestrator.ts`](server/src/orchestrator.ts) runs the pipeline loop and specialist stages.
+**BigBoss in code:** [`server/src/bigboss-director.ts`](server/src/bigboss-director.ts) centralises planning (OpenAI + CLI fallback), human-facing summaries, and Overseer design/code reviews (CLI + API fallback). It prepends the canonical persona from [`skills/bigboss/system-prompt.md`](skills/bigboss/system-prompt.md) to those calls. [`server/src/agent-runner.ts`](server/src/agent-runner.ts) prepends the same file for BigBoss overseer CLI runs and passes `--resume <chatId>` when a session id is set. [`server/src/cursor-session-registry.ts`](server/src/cursor-session-registry.ts) lazily runs `agent create-chat` per `(taskId, agentType)` (see `CURSOR_AGENT_SESSIONS`). Stage definitions live in [`server/src/pipeline-stages.ts`](server/src/pipeline-stages.ts); [`server/src/orchestrator.ts`](server/src/orchestrator.ts) runs the pipeline loop and specialist stages.
 
 Skill packs are read from `skills/` on disk (`SKILLS_ROOT` overrides the path).
 
@@ -123,7 +123,8 @@ The `web/` package has a simple `npm run dev` (static serve) if you want to iter
 | `SKILLS_ROOT` | Override skills directory | Optional |
 | `CURSOR_CLI` | Override Cursor agent binary | Optional |
 | `CURSOR_AGENT_MODEL` | Model for Cursor CLI (default `auto`) | Optional |
-| `BIGBOSS_PERSIST_CLI` | Set `0` to disable per-pipeline Cursor chat (`create-chat` + `--resume`) for BigBoss | Optional |
+| `CURSOR_AGENT_SESSIONS` | `off` — no resume; `bigboss` — only BigBoss CLI uses `--resume` (default if unset and `BIGBOSS_PERSIST_CLI` not `0`); `all` — each specialist `agentType` gets its own lazy chat per pipeline | Optional |
+| `BIGBOSS_PERSIST_CLI` | If `0` and `CURSOR_AGENT_SESSIONS` unset, same as `CURSOR_AGENT_SESSIONS=off` (legacy) | Optional |
 | `BIGBOSS_MODEL` | OpenAI model for planning (default `gpt-4o-mini`) | Optional |
 | `MERGE_MODEL` | Design merge model (defaults to `BIGBOSS_MODEL`) | Optional |
 

@@ -10,10 +10,10 @@ import {
   readCodingNotes,
   runLintCheck,
   buildContextBrief,
-  createCursorAgentSession,
   AgentRunConfig,
   AgentRunResult,
 } from "./agent-runner";
+import { createCursorSessionRegistry, type CursorSessionRegistry } from "./cursor-session-registry";
 import { loadOrBuildCache, getCacheBrief } from "./context-cache";
 import { parseCodingNotes, shouldLoopOnFeedback } from "./feedback-criteria";
 import {
@@ -44,11 +44,11 @@ function prependOriginalTaskToDesign(workDir: string, designContent: string, ori
 async function mergeDesignOutputs(
   workDir: string,
   results: AgentRunResult[],
+  sessionRegistry: CursorSessionRegistry,
   originalTask?: string,
   skillsRoot?: string,
   pipelineId?: string,
   signal?: AbortSignal,
-  cursorSessionId?: string | null,
 ): Promise<void> {
   const designFiles: Array<{ agent: string; content: string }> = [];
 
@@ -88,8 +88,9 @@ async function mergeDesignOutputs(
   }
 
   if (skillsRoot && pipelineId && originalTask) {
+    const bigBossSession = await sessionRegistry.getOrCreate("bigboss");
     const agentMerged = await mergeDesignWithAgent(
-      workDir, designFiles, originalTask, skillsRoot, pipelineId, signal, cursorSessionId,
+      workDir, designFiles, originalTask, skillsRoot, pipelineId, signal, bigBossSession,
     );
     if (agentMerged) return;
     createLogger("orchestrator").info("Agent-based merge failed, falling back to API merge", undefined, "flow");
@@ -446,14 +447,8 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
     log.warn("Context cache build failed (non-fatal)", { err: String(err) });
   }
 
-  const cursorSessionId = await createCursorAgentSession(workDir);
-  if (cursorSessionId) {
-    log.info("BigBoss Cursor chat session (create-chat + --resume)", { sessionHint: cursorSessionId.slice(0, 8) }, "flow");
-  } else if (process.env.BIGBOSS_PERSIST_CLI === "0") {
-    log.debug("BigBoss persistent chat disabled (BIGBOSS_PERSIST_CLI=0)");
-  } else {
-    log.debug("BigBoss persistent chat unavailable (create-chat failed or CLI missing); CLI runs stay cold");
-  }
+  const sessionRegistry = createCursorSessionRegistry(workDir, task.id, log);
+  log.info("Cursor agent sessions", { mode: sessionRegistry.getMode() }, "flow");
 
   let stages: StageDefinition[];
   let complexity: "trivial" | "moderate" | "complex" = "moderate";
@@ -461,7 +456,14 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
   let planned: BigBossResult | null = null;
 
   if (task.pipelineMode === "auto") {
-    planned = await planWithBigBoss(task.prompt, workDir, task.id, cacheBrief || undefined, task.pipelineMode, cursorSessionId);
+    planned = await planWithBigBoss(
+      task.prompt,
+      workDir,
+      task.id,
+      cacheBrief || undefined,
+      task.pipelineMode,
+      await sessionRegistry.getOrCreate("bigboss"),
+    );
     if (planned) {
       stages = planned.stages;
       complexity = planned.complexity;
@@ -522,6 +524,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
         }
 
         const briefKey = stage.agent;
+        const cursorSessionId = await sessionRegistry.getOrCreate(stage.agent);
         const config: AgentRunConfig = {
           ...baseConfig,
           prompt: stagePrompt,
@@ -532,6 +535,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
           upstreamResults: upstreamResults.length > 0 ? [...upstreamResults] : undefined,
           agentBrief: agentBriefs[briefKey] || agentBriefs[stage.name] || null,
           parallelDesign: isDesignGroup || undefined,
+          cursorSessionId,
         };
 
         return runAgent(config, workDir, (event) => {
@@ -589,14 +593,21 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
 
       if (group.stageDefs[0]?.category === "design" && group.stageDefs.length > 1) {
         taskStore.emit_log(task.id, `Merging ${group.stageDefs.length} design documents…`);
-        await mergeDesignOutputs(workDir, parallelResults, task.prompt, skillsRoot, task.id, signal, cursorSessionId);
+        await mergeDesignOutputs(workDir, parallelResults, sessionRegistry, task.prompt, skillsRoot, task.id, signal);
         taskStore.emit_log(task.id, `Merged ${group.stageDefs.length} design documents`);
 
         taskStore.emit_overseer_log(task.id, "BigBoss (Overseer): reviewing design against requirements…", {
           phase: "design-review",
           status: "running",
         });
-        const designReview = await overseerPostDesignReview(workDir, task.prompt, skillsRoot, task.id, cursorSessionId, signal);
+        const designReview = await overseerPostDesignReview(
+          workDir,
+          task.prompt,
+          skillsRoot,
+          task.id,
+          await sessionRegistry.getOrCreate("bigboss"),
+          signal,
+        );
         taskStore.emit_overseer_log(
           task.id,
           designReview?.fit === "ok"
@@ -702,6 +713,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
           }
         }
 
+        const cursorSessionId = await sessionRegistry.getOrCreate(stage.agent);
         const config: AgentRunConfig = {
           ...baseConfig,
           prompt: stagePrompt,
@@ -714,6 +726,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
             ? [...upstreamResults]
             : undefined,
           agentBrief: releaseBrief ?? agentBriefs[briefKey] ?? agentBriefs[stage.agent] ?? null,
+          cursorSessionId,
         };
 
         const progressCallback = (event: { type: string; elapsedSeconds?: number; filesEdited?: number }) => {
@@ -738,6 +751,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
           for (let i = 0; i < subTasks.length; i++) {
             if (signal.aborted) break;
             taskStore.emit_log(task.id, `Running sub-task ${i + 1}/${subTasks.length}: ${subTasks[i].slice(0, 100)}...`);
+            const subSessionId = await sessionRegistry.getOrCreate(stage.agent);
             const subConfig: AgentRunConfig = {
               ...config,
               prompt: `${task.prompt}\n\n## Current sub-task (${i + 1} of ${subTasks.length})\n\n${subTasks[i]}`,
@@ -745,6 +759,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
               subTaskIndex: i,
               subTaskTotal: subTasks.length,
               upstreamResults: [...upstreamResults],
+              cursorSessionId: subSessionId,
             };
             lastResult = await runAgent(subConfig, workDir, progressCallback, signal);
             upstreamResults.push(lastResult);
@@ -839,6 +854,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
               log.warn("Lint/build failed, running fix-up pass...", { command: lint.command }, "status");
               taskStore.emit_log(task.id, `Lint check failed (${lint.command}), running fix-up pass...`);
 
+              const fixSessionId = await sessionRegistry.getOrCreate(stage.agent);
               const fixConfig: AgentRunConfig = {
                 ...baseConfig,
                 agentType: stage.agent,
@@ -848,6 +864,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
                 complexity,
                 prompt: `${task.prompt}\n\nIMPORTANT: The previous coding pass produced lint/build errors. Fix them.\n\nCommand: ${lint.command}\nErrors:\n${lint.output}`,
                 upstreamResults: [...upstreamResults],
+                cursorSessionId: fixSessionId,
               };
 
               const fixResult = await runAgent(fixConfig, workDir, undefined, signal);
@@ -873,6 +890,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
               log.warn("Execution verification failed, running fix-up pass", { command: execResult.command }, "status");
               taskStore.emit_log(task.id, `Exec verification failed (${execResult.command}), running fix-up pass...`);
 
+              const execFixSessionId = await sessionRegistry.getOrCreate(stage.agent);
               const execFixConfig: AgentRunConfig = {
                 ...baseConfig,
                 agentType: stage.agent,
@@ -882,6 +900,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
                 complexity,
                 prompt: `${task.prompt}\n\nIMPORTANT: The project failed execution verification. Fix the errors below.\n\nCommand: ${execResult.command}\nErrors:\n${execResult.output}`,
                 upstreamResults: [...upstreamResults],
+                cursorSessionId: execFixSessionId,
               };
 
               const execFixResult = await runAgent(execFixConfig, workDir, undefined, signal);
@@ -905,7 +924,14 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
               phase: "code-review",
               status: "running",
             });
-            const codeReview = await overseerPostCodeReview(workDir, task.prompt, skillsRoot, task.id, cursorSessionId, signal);
+            const codeReview = await overseerPostCodeReview(
+              workDir,
+              task.prompt,
+              skillsRoot,
+              task.id,
+              await sessionRegistry.getOrCreate("bigboss"),
+              signal,
+            );
             taskStore.emit_overseer_log(
               task.id,
               codeReview?.fit === "ok"
@@ -919,6 +945,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
               codeReviewIterations++;
               taskStore.emit_log(task.id, `Overseer code review: drift found. Running fix-up pass (${codeReviewIterations}).`);
               log.info("Overseer code review: re-running coder for drift", { missingOrWrong: codeReview.missingOrWrong }, "flow");
+              const overseerFixSessionId = await sessionRegistry.getOrCreate(stage.agent);
               const overseerConfig: AgentRunConfig = {
                 ...baseConfig,
                 prompt: `${task.prompt}\n\n## Overseer code review\n${codeReview.suggestedSubTask.prompt}`,
@@ -929,6 +956,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
                 complexity,
                 upstreamResults: [...upstreamResults],
                 agentBrief: agentBriefs[stage.agent] ?? null,
+                cursorSessionId: overseerFixSessionId,
               };
               const overseerResult = await runAgent(overseerConfig, workDir, undefined, signal);
               upstreamResults.push(overseerResult);

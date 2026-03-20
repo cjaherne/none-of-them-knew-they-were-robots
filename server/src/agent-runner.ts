@@ -6,6 +6,7 @@ import * as os from "os";
 import { createLogger } from "@agents/shared";
 import { loadSkillPack, SkillPack } from "./skill-loader";
 import { loadBigBossSystemPromptSync } from "./bigboss-prompt-loader";
+import { getCursorAgentSessionsMode } from "./cursor-session-policy";
 
 const log = createLogger("agent-runner");
 
@@ -60,14 +61,10 @@ const AGENT = resolveAgent();
 const CHAT_ID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
 /**
- * Creates a new Cursor Agent chat session for `--resume` continuity across CLI invocations.
- * Disabled when BIGBOSS_PERSIST_CLI=0. Returns null on failure (caller uses cold CLI per call).
+ * Runs `agent create-chat` and returns the new chat UUID, or null on failure.
+ * Does not consult env; use {@link createCursorAgentSession} or {@link CursorSessionRegistry} for policy.
  */
-export function createCursorAgentSession(workDir: string): Promise<string | null> {
-  if (process.env.BIGBOSS_PERSIST_CLI === "0") {
-    return Promise.resolve(null);
-  }
-
+export function spawnCursorAgentCreateChat(workDir: string): Promise<string | null> {
   const args = [...AGENT.args, "create-chat"];
   const useShell = !AGENT.direct && process.platform === "win32";
 
@@ -117,6 +114,14 @@ export function createCursorAgentSession(workDir: string): Promise<string | null
   });
 }
 
+/** @deprecated Prefer `createCursorSessionRegistry` from `cursor-session-registry.ts` in the orchestrator. */
+export function createCursorAgentSession(workDir: string): Promise<string | null> {
+  if (getCursorAgentSessionsMode() === "off") {
+    return Promise.resolve(null);
+  }
+  return spawnCursorAgentCreateChat(workDir);
+}
+
 export interface AgentRunConfig {
   agentType: string;
   category: string;
@@ -141,10 +146,7 @@ export interface AgentRunConfig {
   /** When set, this is a sub-task prompt within a decomposed coding run */
   subTaskIndex?: number;
   subTaskTotal?: number;
-  /**
-   * Cursor Agent server-side chat id (`agent create-chat` + `--resume`).
-   * Use only for BigBoss-shaped runs so one pipeline shares conversation context.
-   */
+  /** Cursor Agent server-side chat id (`agent create-chat` + `--resume`). */
   cursorSessionId?: string | null;
 }
 
