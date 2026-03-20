@@ -6,6 +6,7 @@ import * as os from "os";
 import { createLogger } from "@agents/shared";
 import { loadSkillPack, SkillPack } from "./skill-loader";
 import { loadBigBossSystemPromptSync } from "./bigboss-prompt-loader";
+import { OVERSEER_LOVE_CODE_CHECKLIST, OVERSEER_LOVE_DESIGN_CHECKLIST } from "./overseer-love-checklists";
 import { getCursorAgentSessionsMode } from "./cursor-session-policy";
 
 const log = createLogger("agent-runner");
@@ -148,6 +149,8 @@ export interface AgentRunConfig {
   subTaskTotal?: number;
   /** Cursor Agent server-side chat id (`agent create-chat` + `--resume`). */
   cursorSessionId?: string | null;
+  /** When set (love), Overseer review preambles include a LÖVE-specific checklist. */
+  overseerStack?: "web" | "love";
 }
 
 export interface TokenUsage {
@@ -391,6 +394,24 @@ and framework. Check the available npm scripts for existing test commands.
 Write all test files to disk and execute them.
 `.trim();
 
+const PREAMBLE_LOVE_TESTING = `
+You are running as a local CLI agent with full file-system access.
+Your role in this pipeline is TESTING for a LÖVE2D / Lua project.
+
+A preview of DESIGN.md and upstream context is included below. READ the full
+DESIGN.md from the workspace root. Upstream handoff files are in .pipeline/*.handoff.md.
+
+Your job:
+1. Prefer **busted** for pure Lua modules (game logic, utilities): add spec files
+   under spec/ or *_spec.lua as appropriate; document how to run tests (e.g. busted).
+2. Test logic without the LÖVE runtime where possible; mock or isolate modules that
+   call love.* when needed.
+3. When useful, run \`love .\` briefly to catch startup/runtime errors and report them.
+4. Use your shell tool to install busted or other Lua test tooling if missing.
+
+Write tests to disk and execute them; summarize results and gaps.
+`.trim();
+
 const PREAMBLE_RELEASE = `
 You are running as a local CLI agent with full file-system and git access.
 Your role in this pipeline is RELEASE PREP — prepare the branch for a Pull Request.
@@ -422,10 +443,12 @@ Your job:
 4. For games: verify visual perspective, player count, character selection,
    game modes, screen layout, input methods, and sound requirements.
 5. Respond with ONLY a JSON object on a single line:
-   { "fit": "ok" | "gaps", "gaps": ["gap1", ...], "suggestedSubTask": { "prompt": "instructions" } }
-   If fit is "ok", gaps and suggestedSubTask are optional.
-   If fit is "gaps", list every missing or underspecified requirement in gaps,
-   and provide focused designer instructions in suggestedSubTask.prompt.
+   { "fit": "ok" | "gaps", "gaps": ["gap1", ...],
+     "gapsByAgent": { "agent-type": "instructions for that designer only" } (optional),
+     "suggestedSubTask": { "prompt": "shared instructions when gaps span roles" } }
+   Agent-type keys must match pipeline agents (e.g. game-designer, love-architect, love-ux, ux-designer, core-code-designer, graphics-designer).
+   If fit is "ok", optional fields may be omitted.
+   If fit is "gaps", list gaps; use gapsByAgent when a gap clearly belongs to one designer; use suggestedSubTask for cross-cutting gaps.
 
 DO NOT modify any files. This is a read-only review.
 `.trim();
@@ -456,7 +479,10 @@ Your job:
 DO NOT modify any files. This is a read-only review.
 `.trim();
 
-function getPreamble(category: string, parallelDesign?: boolean): string {
+function getPreamble(category: string, parallelDesign?: boolean, agentType?: string): string {
+  if (category === "validation" && agentType === "love-testing") {
+    return PREAMBLE_LOVE_TESTING;
+  }
   switch (category) {
     case "planning": return PREAMBLE_PLANNING;
     case "design": return parallelDesign ? PREAMBLE_DESIGN_PARALLEL : PREAMBLE_DESIGN;
@@ -711,7 +737,12 @@ export function buildContextBrief(
 
     case "validation":
       brief.fileTree = getFileTree(workDir);
-      brief.designDoc = getDesignDoc(workDir, upstreamResults?.some((r) => r.agent === "lua-coding") ? 24000 : 6000);
+      brief.designDoc = getDesignDoc(
+        workDir,
+        upstreamResults?.some((r) => r.agent === "lua-coding" || r.agent === "love-testing") || agentType === "love-testing"
+          ? 24000
+          : 6000,
+      );
       brief.testPatterns = getTestPatterns(workDir);
       brief.packageScripts = getPackageScripts(workDir);
       if (upstreamResults) {
@@ -747,7 +778,7 @@ function buildFullPrompt(
     config.category, workDir, config.upstreamResults, config.baseBranch, config.agentBrief, config.agentType,
   );
 
-  let preamble = getPreamble(config.category, config.parallelDesign);
+  let preamble = getPreamble(config.category, config.parallelDesign, config.agentType);
   if (
     config.agentType === "bigboss" &&
     (config.category === "design-review" || config.category === "code-review")
@@ -758,6 +789,14 @@ function buildFullPrompt(
       const body = skillMd.length > cap ? `${skillMd.slice(0, cap)}\n\n[…truncated…]` : skillMd;
       preamble = `${body}\n\n---\n\n${preamble}`;
     }
+  }
+  if (
+    config.overseerStack === "love" &&
+    (config.category === "design-review" || config.category === "code-review")
+  ) {
+    preamble += `\n\n---\n\n${
+      config.category === "design-review" ? OVERSEER_LOVE_DESIGN_CHECKLIST : OVERSEER_LOVE_CODE_CHECKLIST
+    }`;
   }
   parts.push(preamble);
   if (config.parallelDesign && config.category === "design") {

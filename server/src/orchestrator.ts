@@ -25,6 +25,7 @@ import {
   getMergeModel,
   MAX_OVERSEER_DESIGN_ITERATIONS,
   MAX_OVERSEER_CODE_ITERATIONS,
+  MAX_LOVE_TEST_FIX_ITERATIONS,
   type BigBossResult,
 } from "./bigboss-director";
 import {
@@ -33,7 +34,9 @@ import {
   stagesForMode,
   groupStages,
   resolveSkillsRoot,
+  inferStackFromAgents,
   type StageDefinition,
+  type PipelineStack,
 } from "./pipeline-stages";
 
 function prependOriginalTaskToDesign(workDir: string, designContent: string, originalTask: string): string {
@@ -479,6 +482,8 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
 
   stages = [...stages, RELEASE_STAGE];
 
+  const pipelineStack: PipelineStack = inferStackFromAgents(stages.map((s) => s.agent));
+
   const initialStages: StageStatus[] = stages.map((s) => ({
     name: s.name,
     agent: s.agent,
@@ -494,8 +499,11 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
   const isTrivial = complexity === "trivial";
   let designLoops = 0;
   let designFeedback: string | undefined;
+  /** Overseer gaps routed to specific designer agent types (parallel re-run). */
+  let designFeedbackByAgent: Record<string, string> | undefined;
   let designReviewIterations = 0;
   let codeReviewIterations = 0;
+  let loveTestFixIterations = 0;
   let feedbackFingerprint: string | undefined;
   let groupIndex = 0;
 
@@ -519,8 +527,13 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
       const isDesignGroup = group.stageDefs[0]?.category === "design";
       const parallelPromises = group.stageDefs.map(async (stage) => {
         let stagePrompt = task.prompt;
-        if (stage.category === "design" && designFeedback) {
-          stagePrompt += `\n\n## Feedback to incorporate into your design\n${designFeedback}`;
+        if (stage.category === "design" && (designFeedback || designFeedbackByAgent)) {
+          const scoped = designFeedbackByAgent?.[stage.agent];
+          if (scoped) {
+            stagePrompt += `\n\n## Overseer feedback for your role (${stage.agent})\n${scoped}`;
+          } else if (designFeedback) {
+            stagePrompt += `\n\n## Feedback to incorporate into your design\n${designFeedback}`;
+          }
         }
 
         const briefKey = stage.agent;
@@ -607,6 +620,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
           task.id,
           await sessionRegistry.getOrCreate("bigboss"),
           signal,
+          { stack: pipelineStack },
         );
         taskStore.emit_overseer_log(
           task.id,
@@ -619,6 +633,15 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
         );
         if (designReview?.fit === "gaps" && designReviewIterations < MAX_OVERSEER_DESIGN_ITERATIONS) {
           designReviewIterations++;
+          designFeedbackByAgent = undefined;
+          const rawByAgent = designReview.gapsByAgent;
+          if (rawByAgent && typeof rawByAgent === "object") {
+            const cleaned: Record<string, string> = {};
+            for (const [k, v] of Object.entries(rawByAgent)) {
+              if (typeof v === "string" && v.trim()) cleaned[k] = v.trim();
+            }
+            if (Object.keys(cleaned).length > 0) designFeedbackByAgent = cleaned;
+          }
           designFeedback = designReview.suggestedSubTask?.prompt
             ? `Overseer found gaps; address these in your design:\n${designReview.suggestedSubTask.prompt}`
             : `Overseer found gaps: ${(designReview.gaps || []).join("; ")}`;
@@ -654,6 +677,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
 
           if (approval.action === "revise" && designLoops < MAX_DESIGN_LOOPS) {
             designLoops++;
+            designFeedbackByAgent = undefined;
             designFeedback = approval.feedback || "User requested design changes.";
             taskStore.emit_log(task.id, `Design revision ${designLoops}: ${designFeedback}`);
             for (const s of group.stageDefs) {
@@ -696,11 +720,16 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
 
       try {
         let stagePrompt = task.prompt;
-        if (stage.category === "design" && designFeedback) {
-          stagePrompt += `\n\n## Feedback from previous coding pass\nIncorporate these notes into the revised design:\n${designFeedback}`;
+        if (stage.category === "design" && (designFeedback || designFeedbackByAgent)) {
+          const scoped = designFeedbackByAgent?.[stage.agent];
+          if (scoped) {
+            stagePrompt += `\n\n## Overseer feedback for your role (${stage.agent})\n${scoped}`;
+          } else if (designFeedback) {
+            stagePrompt += `\n\n## Feedback on your previous design pass\nIncorporate into the revised design:\n${designFeedback}`;
+          }
         }
 
-        const briefKey = stage.name === "validation" ? "testing" : stage.name;
+        const briefKey = stage.agent;
         const releaseBrief = stage.category === "release"
           ? `Target base branch for PR: ${task.baseBranch}. Use this for \`git log ${task.baseBranch}..HEAD\` and \`gh pr create --base ${task.baseBranch}\`.`
           : null;
@@ -838,6 +867,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
 
             if (approval.action === "revise" && designLoops < MAX_DESIGN_LOOPS) {
               designLoops++;
+              designFeedbackByAgent = undefined;
               designFeedback = approval.feedback || "User requested design changes.";
               log.info(`Design revision requested (loop ${designLoops})`, { feedback: designFeedback }, "flow");
               taskStore.emit_log(task.id, `Design revision ${designLoops}: ${designFeedback}`);
@@ -931,6 +961,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
               task.id,
               await sessionRegistry.getOrCreate("bigboss"),
               signal,
+              { stack: pipelineStack },
             );
             taskStore.emit_overseer_log(
               task.id,
@@ -1043,6 +1074,49 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
             }
           }
         } else {
+          if (
+            stage.category === "validation" &&
+            stage.agent === "love-testing" &&
+            loveTestFixIterations < MAX_LOVE_TEST_FIX_ITERATIONS
+          ) {
+            const luaCoder = stages.find((s) => s.agent === "lua-coding");
+            if (luaCoder) {
+              loveTestFixIterations++;
+              const tail = (result.output || "").slice(-6000);
+              const errSnippet = [...(result.errors || []), tail].filter(Boolean).join("\n").slice(0, 12_000);
+              taskStore.emit_log(
+                task.id,
+                `Love-testing stage failed (${loveTestFixIterations}/${MAX_LOVE_TEST_FIX_ITERATIONS}); running lua-coding fix-up, then retrying validation…`,
+              );
+              const last = upstreamResults[upstreamResults.length - 1];
+              if (last?.agent === "love-testing" && !last.success) upstreamResults.pop();
+
+              const fixSessionId = await sessionRegistry.getOrCreate(luaCoder.agent);
+              const testFixConfig: AgentRunConfig = {
+                ...baseConfig,
+                agentType: luaCoder.agent,
+                category: "coding",
+                workspaceReady: true,
+                trivial: true,
+                complexity,
+                prompt: `${task.prompt}\n\n## Validation / test failures\nFix implementation or tests so busted (and any LÖVE smoke checks) pass. Address:\n\n${errSnippet}`,
+                upstreamResults: [...upstreamResults],
+                agentBrief: agentBriefs[luaCoder.agent] ?? null,
+                cursorSessionId: fixSessionId,
+              };
+              const fixResult = await runAgent(testFixConfig, workDir, progressCallback, signal);
+              upstreamResults.push(fixResult);
+
+              taskStore.updateStage(task.id, stage.name, {
+                status: "pending" as const,
+                startedAt: undefined,
+                completedAt: undefined,
+                errors: undefined,
+              });
+              continue;
+            }
+          }
+
           taskStore.updateStage(task.id, stage.name, {
             status: "failed",
             completedAt: new Date().toISOString(),

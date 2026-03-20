@@ -8,6 +8,8 @@ A voice-controlled multi-agent AI design and development team: a **web UI**, a *
 
 **Version 2.2** — BigBoss planning and Overseer calls are centralised in [`server/src/bigboss-director.ts`](server/src/bigboss-director.ts) with shared stage definitions in [`server/src/pipeline-stages.ts`](server/src/pipeline-stages.ts). Optional **Cursor chat continuity** uses `agent create-chat` plus `--resume` per pipeline (`CURSOR_AGENT_SESSIONS`: `off`, `bigboss`, or `all`; see [`server/.env.local.example`](server/.env.local.example)). The example env file also documents **`CURSOR_AGENT_MODEL`** slugs (run `agent models` for your account).
 
+**Version 2.3** — **LÖVE-focused agents** (`love-architect`, `love-ux`, `love-testing`) and separate web vs LÖVE pipeline stages; web designer/testing prompts no longer cover Lua games. BigBoss can set `stack: "love"` for LÖVE tasks. Overseer supports **per-designer** `gapsByAgent`, LÖVE-specific review checklists, and a bounded **love-testing → lua-coding** retry when validation fails.
+
 ## Overview
 
 Speak or type a task, and specialist agents — designers, coders, testers — collaborate via Cursor CLI to complete it. New agent types are added mostly through **skill packs** under `skills/`, not by changing the server core.
@@ -17,15 +19,16 @@ Speak or type a task, and specialist agents — designers, coders, testers — c
 | Category | Agents | Role | MCP Tools |
 |----------|--------|------|-----------|
 | **Analysis / Overseer** | BigBoss | Plans pipelines; Overseer reviews (design fit + code drift) | Filesystem, GitHub, Fetch, Sequential Thinking |
-| **Design** | UX Designer | Flows, wireframes, a11y, game UI | Filesystem, Playwright, Fetch |
-| **Design** | Core Code Designer | Architecture, APIs, Lua modules | Filesystem, GitHub, Fetch |
-| **Design** | Graphics Designer | Tokens, game art briefs | Filesystem, Fetch |
-| **Design** | Game Designer | Mechanics, controls, Lua/LÖVE structure | Filesystem, Fetch, Sequential Thinking |
-| **Coding** | Coding / Lua coding | Implementation from specs | Filesystem, GitHub, Fetch |
-| **Validation** | Testing Agent | Tests, E2E, Lua/busted | Filesystem, Playwright, Fetch |
+| **Design** | UX Designer | Web/product flows, wireframes, a11y | Filesystem, Playwright, Fetch |
+| **Design** | Core Code Designer | Web/backend architecture, APIs | Filesystem, GitHub, Fetch |
+| **Design** | Graphics Designer | Visual tokens, CSS, web UI | Filesystem, Fetch |
+| **Design** | Game Designer | Mechanics, controls, LÖVE game structure | Filesystem, Fetch, Sequential Thinking |
+| **Design** | LÖVE Architect / LÖVE UX | Lua modules, scenes/HUD (LÖVE games) | Filesystem, Fetch (Architect also GitHub) |
+| **Coding** | Coding / Lua coding | Web vs LÖVE implementation | Filesystem, GitHub, Fetch |
+| **Validation** | Testing / LÖVE testing | Web tests vs busted / `love .` smoke | Filesystem, Playwright, Fetch |
 | **Release** | Release Agent | README, SemVer, tags, PR | Filesystem, GitHub |
 
-BigBoss selects stage agents, runs the Overseer after design merge and after coding, and can trigger focused re-runs. The **Release** agent runs at the end of a successful pipeline when a repo is configured.
+BigBoss selects stage agents, runs the Overseer after design merge and after coding, and can trigger focused re-runs. Overseer may return **per-designer** `gapsByAgent` so parallel designers only see feedback for their role; LÖVE stacks get extra Overseer checklists. If **love-testing** fails, the orchestrator can run a bounded **lua-coding** fix-up and retry validation. The **Release** agent runs at the end of a successful pipeline when a repo is configured.
 
 ### Architecture
 

@@ -15,14 +15,18 @@ import {
 import { loadBigBossSystemPromptSync } from "./bigboss-prompt-loader";
 import {
   AGENT_TYPE_TO_DEF,
-  FULL_STAGES,
+  type PipelineStack,
   type RuntimeStageGroup,
   type StageDefinition,
-  getAvailableParallelDesigners,
+  getFullStagesForStack,
+  getLoveParallelDesigners,
+  getWebParallelDesigners,
   groupStages,
+  inferStackFromAgents,
   resolveSkillsRoot,
   skillPackExists,
 } from "./pipeline-stages";
+import { OVERSEER_LOVE_CODE_CHECKLIST, OVERSEER_LOVE_DESIGN_CHECKLIST } from "./overseer-love-checklists";
 
 export function getBigBossModel(): string {
   return process.env.BIGBOSS_MODEL || "gpt-4o-mini";
@@ -41,21 +45,25 @@ function skillContextBlock(skillsRoot: string): string {
 }
 
 const BIGBOSS_ROUTING_PROMPT = `You are a pipeline planner. Given a task, decide which pipeline stages are needed and estimate complexity.
-Respond with ONLY a JSON object: { "stages": ["design", "coding", "testing"], "complexity": "trivial" | "moderate" | "complex" }
+Respond with ONLY a JSON object:
+{ "stages": ["design", "coding", "testing"], "complexity": "trivial" | "moderate" | "complex", "stack": "web" | "love" }
 
 Rules:
 - "design" = architecture/planning needed (new features, complex changes)
 - "coding" = implementation needed (code changes, file creation)
 - "testing" = test creation/validation needed
+- "stack": use "love" for LÖVE2D / Lua game projects; use "web" for websites, Node, React, APIs, CLIs (default when unsure)
 - Simple fixes may only need "coding"
 - Documentation tasks may only need "coding"
 - Most new features need all three stages
-- If unsure, include all three
+- If unsure, include all three and default stack to "web"
 
 Complexity guide:
 - "trivial" = one-line fix, rename, typo, config change
 - "moderate" = single-feature addition, small refactor
-- "complex" = multi-file feature, architectural change, new system`;
+- "complex" = multi-file feature, architectural change, new system
+
+Parallel design: when complexity is "complex" and the plan includes "design", you may set "parallelDesign": true to run multiple designers in parallel (optional).`;
 
 const BIGBOSS_CONTEXT_BROKER_PROMPT = `You are BigBoss, a context broker for a multi-agent pipeline. You will receive a task description and a codebase summary. Your job is to produce a pipeline plan using the FULL stage/agent structure.
 
@@ -70,16 +78,21 @@ Respond with ONLY a JSON object:
       ]
     },
     { "name": "coding", "parallel": false, "agents": [{ "type": "coding" or "lua-coding", "context": { "focus": "..." } }] },
-    { "name": "validation", "parallel": false, "agents": [{ "type": "testing", "context": { "focus": "..." } }] }
+    { "name": "validation", "parallel": false, "agents": [{ "type": "testing" or "love-testing", "context": { "focus": "..." } }] }
   ],
   "complexity": "trivial" | "moderate" | "complex",
   "reasoning": "Brief explanation"
 }
 
-Allowed agent types: ux-designer, core-code-designer, graphics-designer, game-designer, coding, lua-coding, testing.
+Allowed agent types:
+- Web/UI design: ux-designer, core-code-designer, graphics-designer
+- LÖVE / Lua game design: game-designer, love-architect, love-ux
+- Implementation: coding (web/Node), lua-coding (LÖVE/Lua games)
+- Validation: testing (web/Node), love-testing (LÖVE/Lua — busted, game smoke checks)
 
-- **Web/UI tasks**: In the design stage (parallel: true) include ux-designer, core-code-designer, graphics-designer. Use coding for the coding stage.
-- **Full videogame / Lua / LÖVE tasks**: Set complexity to "complex". In the design stage (parallel: true) include MULTIPLE designers: game-designer (mechanics, controls, Lua structure), core-code-designer (architecture, modules), ux-designer (menus, HUD, flows), graphics-designer (visual style, art direction). Use lua-coding (not coding) for the coding stage. Do not use only one designer for a full game.
+Rules:
+- **Web/UI tasks**: Design stage (parallel: true): ux-designer, core-code-designer, graphics-designer. Coding: coding. Validation: testing.
+- **LÖVE2D / Lua game tasks**: Set complexity to "complex" when it is a full game or large gameplay feature. Design stage (parallel: true): game-designer, love-architect, love-ux — do not substitute web designers. Coding: lua-coding. Validation: love-testing.
 - Designer agents run in parallel (parallel: true) when there are two or more in the same stage.
 - Each agent must have context.focus with 1-3 sentences (under 300 chars). Reference the task or codebase where helpful.`;
 
@@ -93,11 +106,15 @@ export interface BigBossResult {
 
 export const MAX_OVERSEER_DESIGN_ITERATIONS = 2;
 export const MAX_OVERSEER_CODE_ITERATIONS = 2;
+/** After love-testing fails, re-run lua-coding with output, then retry validation (cap). */
+export const MAX_LOVE_TEST_FIX_ITERATIONS = 2;
 
 export interface OverseerDesignReviewResult {
   fit: "ok" | "gaps";
   gaps?: string[];
   suggestedSubTask?: { prompt: string };
+  /** Optional: agent type → instructions for that designer only (e.g. love-ux, game-designer). */
+  gapsByAgent?: Record<string, string>;
 }
 
 export interface OverseerCodeReviewResult {
@@ -247,7 +264,11 @@ function parseFullFormatStages(parsed: Record<string, unknown>): BigBossResult |
 
   const hasCoding = ordered.some((s) => s.category === "coding");
   if (!hasCoding && ordered.length > 0) {
-    const codingDef = skillPackExists("lua-coding") ? AGENT_TYPE_TO_DEF["lua-coding"] : AGENT_TYPE_TO_DEF["coding"];
+    const stack = inferStackFromAgents(ordered.map((s) => s.agent));
+    const codingDef =
+      stack === "love" && skillPackExists("lua-coding")
+        ? AGENT_TYPE_TO_DEF["lua-coding"]
+        : AGENT_TYPE_TO_DEF["coding"];
     if (codingDef && skillPackExists(codingDef.agent)) {
       ordered.push(codingDef);
       stageGroups.push({
@@ -285,26 +306,34 @@ function parseBigBossResponse(parsed: Record<string, unknown>): BigBossResult | 
     ? parsed.complexity
     : "moderate") as BigBossResult["complexity"];
 
+  const stack: PipelineStack = parsed.stack === "love" ? "love" : "web";
+  const fullStages = getFullStagesForStack(stack);
+
   const parallelDesign = parsed.parallelDesign === true && complexity === "complex";
 
   let ordered: StageDefinition[];
   let effectiveParallel = parallelDesign;
   if (parallelDesign && stageNames.includes("design")) {
-    const availableDesigners = getAvailableParallelDesigners();
+    const availableDesigners = stack === "love" ? getLoveParallelDesigners() : getWebParallelDesigners();
     if (availableDesigners.length > 1) {
-      ordered = [...availableDesigners, ...FULL_STAGES.filter((d) => d.category !== "design" && stageNames.includes(d.name === "validation" ? "testing" : d.name))];
+      ordered = [
+        ...availableDesigners,
+        ...fullStages.filter(
+          (d) => d.category !== "design" && stageNames.includes(d.name === "validation" ? "testing" : d.name),
+        ),
+      ];
     } else {
       createLogger("bigboss").info(`Only ${availableDesigners.length} designer(s) available, downgrading to sequential`, undefined, "flow");
       effectiveParallel = false;
       ordered = [];
-      for (const def of FULL_STAGES) {
+      for (const def of fullStages) {
         const lookupName = def.name === "validation" ? "testing" : def.name;
         if (stageNames.includes(lookupName)) ordered.push(def);
       }
     }
   } else {
     ordered = [];
-    for (const def of FULL_STAGES) {
+    for (const def of fullStages) {
       const lookupName = def.name === "validation" ? "testing" : def.name;
       if (stageNames.includes(lookupName)) ordered.push(def);
     }
@@ -417,9 +446,11 @@ export async function overseerPostDesignReview(
   pipelineId: string,
   cursorSessionId?: string | null,
   signal?: AbortSignal,
+  options?: { stack?: PipelineStack },
 ): Promise<OverseerDesignReviewResult | null> {
   const log = createLogger("overseer");
   const skillBlock = skillContextBlock(skillsRoot);
+  const stack = options?.stack ?? "web";
 
   const agentPrompt = `Review the DESIGN.md in this workspace against the original user task below.\n\n## Original task\n\n${originalTask}`;
   try {
@@ -434,6 +465,7 @@ export async function overseerPostDesignReview(
       workspaceReady: true,
       trivial: true,
       cursorSessionId,
+      overseerStack: stack === "love" ? "love" : undefined,
     };
 
     log.info("Running Overseer design review as agent", undefined, "flow");
@@ -456,7 +488,9 @@ export async function overseerPostDesignReview(
     const { default: OpenAI } = await import("openai");
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const model = getBigBossModel();
-    const systemContent = `${skillBlock}You are BigBoss in Overseer mode. Review the design document against the user's original task. Decide if the design covers every requirement from the Original task section. Respond with JSON only: { "fit": "ok" | "gaps", "gaps": ["gap1", "gap2"] (if fit is gaps, list missing or underspecified requirements), "suggestedSubTask": { "prompt": "focused instructions for designers to address the gaps" } (optional, if fit is gaps) }. Be concise.`;
+    const loveBlock = stack === "love" ? `\n\n${OVERSEER_LOVE_DESIGN_CHECKLIST}\n` : "";
+    const systemContent = `${skillBlock}You are BigBoss in Overseer mode. Review the design document against the user's original task. Decide if the design covers every requirement from the Original task section.${loveBlock}
+Respond with JSON only: { "fit": "ok" | "gaps", "gaps": ["gap1", "gap2"] (if fit is gaps), "gapsByAgent": { "agent-type": "instructions for that designer only" } (optional — use keys: game-designer, love-architect, love-ux for LÖVE parallel designs, or ux-designer, core-code-designer, graphics-designer for web; only include agents whose section must change), "suggestedSubTask": { "prompt": "shared instructions when gaps span multiple roles" } (optional) }. Be concise.`;
     const response = await client.chat.completions.create({
       model,
       messages: [
@@ -485,9 +519,11 @@ export async function overseerPostCodeReview(
   pipelineId: string,
   cursorSessionId?: string | null,
   signal?: AbortSignal,
+  options?: { stack?: PipelineStack },
 ): Promise<OverseerCodeReviewResult | null> {
   const log = createLogger("overseer");
   const skillBlock = skillContextBlock(skillsRoot);
+  const stack = options?.stack ?? "web";
 
   const agentPrompt = `Review the implementation in this workspace against the original user task and DESIGN.md.\n\n## Original task\n\n${originalTask}`;
   try {
@@ -502,6 +538,7 @@ export async function overseerPostCodeReview(
       workspaceReady: true,
       trivial: true,
       cursorSessionId,
+      overseerStack: stack === "love" ? "love" : undefined,
     };
 
     log.info("Running Overseer code review as agent", undefined, "flow");
@@ -536,7 +573,9 @@ export async function overseerPostCodeReview(
     const { default: OpenAI } = await import("openai");
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const model = getBigBossModel();
-    const systemContent = `${skillBlock}You are BigBoss in Overseer mode. Review implementation against the design and original task. You receive the design document, a file tree, AND the actual content of key source files. Verify that each requirement from the Original task is implemented in the source code, not just that a file exists. Respond with JSON only: { "fit": "ok" | "drift", "missingOrWrong": ["item1", "item2"] (if fit is drift), "suggestedSubTask": { "prompt": "focused instructions for the coder to add or fix these items" } (optional, if fit is drift) }. Be concise.`;
+    const loveBlock = stack === "love" ? `\n\n${OVERSEER_LOVE_CODE_CHECKLIST}\n` : "";
+    const systemContent = `${skillBlock}You are BigBoss in Overseer mode. Review implementation against the design and original task. You receive the design document, a file tree, AND the actual content of key source files. Verify that each requirement from the Original task is implemented in the source code, not just that a file exists.${loveBlock}
+Respond with JSON only: { "fit": "ok" | "drift", "missingOrWrong": ["item1", "item2"] (if fit is drift), "suggestedSubTask": { "prompt": "focused instructions for the coder to add or fix these items" } (optional, if fit is drift) }. Be concise.`;
     const response = await client.chat.completions.create({
       model,
       messages: [

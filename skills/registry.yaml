@@ -62,6 +62,24 @@ agents:
       cpu: "1"
     cursorFlags: ["--force", "--trust", "--output-format", "stream-json"]
 
+  - type: love-architect
+    displayName: LÖVE Architect
+    category: design
+    skillPack: love-architect
+    resources:
+      memory: "2Gi"
+      cpu: "1"
+    cursorFlags: ["--force", "--trust", "--output-format", "stream-json"]
+
+  - type: love-ux
+    displayName: LÖVE UX
+    category: design
+    skillPack: love-ux
+    resources:
+      memory: "2Gi"
+      cpu: "1"
+    cursorFlags: ["--force", "--trust", "--output-format", "stream-json"]
+
   - type: coding
     displayName: Coding Agent
     category: coding
@@ -84,6 +102,15 @@ agents:
     displayName: Testing Agent
     category: validation
     skillPack: testing
+    resources:
+      memory: "4Gi"
+      cpu: "2"
+    cursorFlags: ["--force", "--trust", "--output-format", "stream-json"]
+
+  - type: love-testing
+    displayName: LÖVE Testing Agent
+    category: validation
+    skillPack: love-testing
     resources:
       memory: "4Gi"
       cpu: "2"
