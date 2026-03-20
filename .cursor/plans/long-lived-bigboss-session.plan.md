@@ -1,3 +1,10 @@
+---
+name: ""
+overview: ""
+todos: []
+isProject: false
+---
+
 # Long-lived BigBoss session (detailed plan — for review before implementation)
 
 ## Problem statement
@@ -25,14 +32,14 @@ Specialists (designers, coders) are intentionally separate processes; the pain p
 
 ## Architecture options (compare)
 
-### Option A — Persistent Cursor CLI process (stdin/stdout protocol)
+### Option A — Persistent BigBoss context in Cursor Agent (implemented)
 
-**Idea:** Spawn **one** `cursor-agent` (or configured `CURSOR_CLI`) at pipeline start for `taskId`; keep it alive; send **framed messages** (e.g. newline-delimited JSON) for each BigBoss duty; read structured replies.
+**Spike result (2026-03):** In `-p` / `stream-json` mode, the CLI does **not** emit a terminal `result` event until **stdin is closed**, so true multi-turn “one OS process, multiple prompts over time” is not viable. The supported mechanism is `**agent create-chat`** (returns a UUID) plus `**--resume <uuid>**` on each headless invocation: Cursor keeps **one server-side chat** per id, so later BigBoss calls reuse conversation + cache even though each run is a new process.
 
-**Pros:** True shared model context inside the CLI; one index of rules/MCP for BigBoss.  
-**Cons:** Process lifecycle on Windows/Linux; **no documented guarantee** the CLI supports multi-turn stdin chat in your version; hard to recover from **stuck/half-open** state; upgrade risk when Cursor changes CLI behavior.
+**Implementation:** `[server/src/agent-runner.ts](server/src/agent-runner.ts)` — `createCursorAgentSession`, `runAgentCli` adds `--resume` when `AgentRunConfig.cursorSessionId` is set. `[server/src/orchestrator.ts](server/src/orchestrator.ts)` calls `create-chat` after workspace setup and threads the id into `planWithBigBoss` (CLI fallback), design merge, and overseer reviews. Opt out: `BIGBOSS_PERSIST_CLI=0`.
 
-**Verdict:** High risk unless we spike and confirm official multi-turn support.
+**Pros:** Official CLI surface; continuity and often faster follow-up turns (cache).  
+**Cons:** Depends on Cursor cloud/session storage; `create-chat` adds a small upfront cost; behavior can change with CLI upgrades.
 
 ### Option B — OpenAI Assistants / Threads / Responses API (stateful server-side)
 
@@ -45,7 +52,7 @@ Specialists (designers, coders) are intentionally separate processes; the pain p
 
 ### Option C — Session transcript file + single “director prompt” envelope (recommended first step)
 
-**Idea:** Maintain ` .pipeline/bigboss-session.md` (or JSONL) in the workspace (or under `server/data/sessions/<taskId>.jsonl`):
+**Idea:** Maintain  `.pipeline/bigboss-session.md` (or JSONL) in the workspace (or under `server/data/sessions/<taskId>.jsonl`):
 
 - On each BigBoss call (plan, overseer, summarize), **append** a structured entry: timestamp, phase, compact summary of inputs/outputs, key JSON decisions.
 - Next call: **prepend** “## BigBoss session memory” built from last N tokens of that file + **truncate** intelligently.
@@ -73,8 +80,8 @@ Specialists (designers, coders) are intentionally separate processes; the pain p
 2. On each `planWithBigBoss`, `overseerPostDesignReview`, `overseerPostCodeReview`, `bigBossSummarize` completion, **append** to task-scoped log (prefer **server/data** if repo is cloned from user project and `.pipeline` is ephemeral — avoid polluting user repos; or use `.pipeline` only when `workDir` is a temp clone — **decision needed**).
 3. Build `formatSessionContext(entries, maxChars)` in `bigboss-director.ts`.
 4. Inject session context into:
-   - OpenAI `system` or leading `user` block for planning and API overseer fallbacks.
-   - CLI: prepend to `buildFullPrompt` for `bigboss` **only** when category is `design-review` / `code-review` / `planning` (if we add explicit planning CLI path later).
+  - OpenAI `system` or leading `user` block for planning and API overseer fallbacks.
+  - CLI: prepend to `buildFullPrompt` for `bigboss` **only** when category is `design-review` / `code-review` / `planning` (if we add explicit planning CLI path later).
 
 **Exit criteria:** Same functional behavior as today + visible session file in debug mode; measure median tokens per overseer call.
 
@@ -97,13 +104,10 @@ Define JSON schema `BigBossAction` for future agentic loop: `{ "action": "run_st
 
 ## Key design decisions to lock before coding Phase 1
 
-1. **Storage location:** `server/data/bigboss/<taskId>.jsonl` vs `.pipeline/bigboss-session.md` inside `workDir`.  
-   - Recommendation: **server/data** for privacy and to avoid committing user-visible noise; link path in debug logs.
-
+1. **Storage location:** `server/data/bigboss/<taskId>.jsonl` vs `.pipeline/bigboss-session.md` inside `workDir`.
+  - Recommendation: **server/data** for privacy and to avoid committing user-visible noise; link path in debug logs.
 2. **PII / secrets:** Strip env-like strings from appended entries; never log raw PATs.
-
 3. **Cancellation:** On `AbortSignal`, do not append partial entries unless marked `aborted: true`.
-
 4. **Compatibility:** Feature flag `BIGBOSS_SESSION=1` env to disable new behavior instantly.
 
 ## Testing strategy

@@ -57,6 +57,66 @@ function resolveAgent(): ResolvedAgent {
 
 const AGENT = resolveAgent();
 
+const CHAT_ID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+/**
+ * Creates a new Cursor Agent chat session for `--resume` continuity across CLI invocations.
+ * Disabled when BIGBOSS_PERSIST_CLI=0. Returns null on failure (caller uses cold CLI per call).
+ */
+export function createCursorAgentSession(workDir: string): Promise<string | null> {
+  if (process.env.BIGBOSS_PERSIST_CLI === "0") {
+    return Promise.resolve(null);
+  }
+
+  const args = [...AGENT.args, "create-chat"];
+  const useShell = !AGENT.direct && process.platform === "win32";
+
+  return new Promise((resolve) => {
+    const proc = spawn(AGENT.bin, args, {
+      cwd: workDir,
+      env: { ...process.env, CURSOR_INVOKED_AS: "agent" },
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: useShell,
+    });
+
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      proc.kill("SIGTERM");
+    }, 45_000);
+
+    proc.stdout?.on("data", (c: Buffer) => {
+      stdout += c.toString();
+    });
+    proc.stderr?.on("data", (c: Buffer) => {
+      stderr += c.toString();
+    });
+
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        log.warn("create-chat failed", { code, stderr: stderr.slice(0, 500) });
+        resolve(null);
+        return;
+      }
+      const m = stdout.match(CHAT_ID_RE);
+      if (!m) {
+        log.warn("create-chat: no chat id in output", { stdout: stdout.slice(0, 200) });
+        resolve(null);
+        return;
+      }
+      log.debug(`Cursor agent session created: ${m[0]}`);
+      resolve(m[0]);
+    });
+
+    proc.on("error", (err) => {
+      clearTimeout(timer);
+      log.warn("create-chat spawn error", { err: String(err) });
+      resolve(null);
+    });
+  });
+}
+
 export interface AgentRunConfig {
   agentType: string;
   category: string;
@@ -81,6 +141,11 @@ export interface AgentRunConfig {
   /** When set, this is a sub-task prompt within a decomposed coding run */
   subTaskIndex?: number;
   subTaskTotal?: number;
+  /**
+   * Cursor Agent server-side chat id (`agent create-chat` + `--resume`).
+   * Use only for BigBoss-shaped runs so one pipeline shares conversation context.
+   */
+  cursorSessionId?: string | null;
 }
 
 export interface TokenUsage {
@@ -178,6 +243,12 @@ export type AgentEventCallback = (event:
   | { type: "log" | "output" | "error"; content: string }
   | { type: "progress"; elapsedSeconds: number; filesEdited: number }
 ) => void;
+
+export interface RunAgentCliOptions {
+  onEvent?: AgentEventCallback;
+  abortSignal?: AbortSignal;
+  cursorSessionId?: string | null;
+}
 
 const INJECTED_PATH_PREFIX = ".cursor/";
 const PIPELINE_PATH_PREFIX = ".pipeline/";
@@ -1051,11 +1122,12 @@ export async function runPlanner(
   workDir: string,
   pipelineId: string,
   timeoutMs = 60_000,
+  cursorSessionId?: string | null,
 ): Promise<{ text: string; timedOut: boolean }> {
   const startTime = Date.now();
   log.debug(`Planner starting (timeout: ${(timeoutMs / 1000).toFixed(0)}s)`);
 
-  const result = await runAgentCli(prompt, workDir, timeoutMs);
+  const result = await runAgentCli(prompt, workDir, timeoutMs, { cursorSessionId });
 
   await writeDebugLog("bigboss-planner", pipelineId, {
     prompt,
@@ -1222,13 +1294,11 @@ export async function runAgent(
   const fullPrompt = buildFullPrompt(config, skillPack, workDir);
   onEvent?.({ type: "log", content: `Running agent in ${workDir}` });
 
-  const cursorResult = await runAgentCli(
-    fullPrompt,
-    workDir,
-    timeoutMs,
+  const cursorResult = await runAgentCli(fullPrompt, workDir, timeoutMs, {
     onEvent,
     abortSignal,
-  );
+    cursorSessionId: config.cursorSessionId,
+  });
 
   await writeDebugLog(config.agentType, config.pipelineId, {
     prompt: fullPrompt,
@@ -1360,9 +1430,12 @@ function runAgentCli(
   prompt: string,
   workDir: string,
   timeoutMs: number,
-  onEvent?: AgentEventCallback,
-  abortSignal?: AbortSignal,
+  options?: RunAgentCliOptions,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const onEvent = options?.onEvent;
+  const abortSignal = options?.abortSignal;
+  const cursorSessionId = options?.cursorSessionId;
+
   const model = process.env.CURSOR_AGENT_MODEL || "auto";
   const args = [
     ...AGENT.args,
@@ -1373,6 +1446,9 @@ function runAgentCli(
     "--workspace", workDir,
     "--output-format", "stream-json",
   ];
+  if (cursorSessionId) {
+    args.push("--resume", cursorSessionId);
+  }
 
   const useShell = !AGENT.direct && process.platform === "win32";
 

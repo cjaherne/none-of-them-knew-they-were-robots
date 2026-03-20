@@ -10,6 +10,7 @@ import {
   readCodingNotes,
   runLintCheck,
   buildContextBrief,
+  createCursorAgentSession,
   AgentRunConfig,
   AgentRunResult,
 } from "./agent-runner";
@@ -47,6 +48,7 @@ async function mergeDesignOutputs(
   skillsRoot?: string,
   pipelineId?: string,
   signal?: AbortSignal,
+  cursorSessionId?: string | null,
 ): Promise<void> {
   const designFiles: Array<{ agent: string; content: string }> = [];
 
@@ -87,7 +89,7 @@ async function mergeDesignOutputs(
 
   if (skillsRoot && pipelineId && originalTask) {
     const agentMerged = await mergeDesignWithAgent(
-      workDir, designFiles, originalTask, skillsRoot, pipelineId, signal,
+      workDir, designFiles, originalTask, skillsRoot, pipelineId, signal, cursorSessionId,
     );
     if (agentMerged) return;
     createLogger("orchestrator").info("Agent-based merge failed, falling back to API merge", undefined, "flow");
@@ -340,6 +342,7 @@ async function mergeDesignWithAgent(
   skillsRoot: string,
   pipelineId: string,
   signal?: AbortSignal,
+  cursorSessionId?: string | null,
 ): Promise<boolean> {
   const log = createLogger("design-merge");
 
@@ -371,6 +374,7 @@ ${originalTask}`;
       branch: "design-merge",
       workspaceReady: true,
       trivial: true,
+      cursorSessionId,
     };
 
     log.info(`Running agent-based design merge for ${designFiles.length} files`, undefined, "flow");
@@ -442,13 +446,22 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
     log.warn("Context cache build failed (non-fatal)", { err: String(err) });
   }
 
+  const cursorSessionId = await createCursorAgentSession(workDir);
+  if (cursorSessionId) {
+    log.info("BigBoss Cursor chat session (create-chat + --resume)", { sessionHint: cursorSessionId.slice(0, 8) }, "flow");
+  } else if (process.env.BIGBOSS_PERSIST_CLI === "0") {
+    log.debug("BigBoss persistent chat disabled (BIGBOSS_PERSIST_CLI=0)");
+  } else {
+    log.debug("BigBoss persistent chat unavailable (create-chat failed or CLI missing); CLI runs stay cold");
+  }
+
   let stages: StageDefinition[];
   let complexity: "trivial" | "moderate" | "complex" = "moderate";
   let agentBriefs: Record<string, string> = {};
   let planned: BigBossResult | null = null;
 
   if (task.pipelineMode === "auto") {
-    planned = await planWithBigBoss(task.prompt, workDir, task.id, cacheBrief || undefined, task.pipelineMode);
+    planned = await planWithBigBoss(task.prompt, workDir, task.id, cacheBrief || undefined, task.pipelineMode, cursorSessionId);
     if (planned) {
       stages = planned.stages;
       complexity = planned.complexity;
@@ -576,14 +589,14 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
 
       if (group.stageDefs[0]?.category === "design" && group.stageDefs.length > 1) {
         taskStore.emit_log(task.id, `Merging ${group.stageDefs.length} design documents…`);
-        await mergeDesignOutputs(workDir, parallelResults, task.prompt, skillsRoot, task.id, signal);
+        await mergeDesignOutputs(workDir, parallelResults, task.prompt, skillsRoot, task.id, signal, cursorSessionId);
         taskStore.emit_log(task.id, `Merged ${group.stageDefs.length} design documents`);
 
         taskStore.emit_overseer_log(task.id, "BigBoss (Overseer): reviewing design against requirements…", {
           phase: "design-review",
           status: "running",
         });
-        const designReview = await overseerPostDesignReview(workDir, task.prompt, skillsRoot, task.id, signal);
+        const designReview = await overseerPostDesignReview(workDir, task.prompt, skillsRoot, task.id, cursorSessionId, signal);
         taskStore.emit_overseer_log(
           task.id,
           designReview?.fit === "ok"
@@ -892,7 +905,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
               phase: "code-review",
               status: "running",
             });
-            const codeReview = await overseerPostCodeReview(workDir, task.prompt, skillsRoot, task.id, signal);
+            const codeReview = await overseerPostCodeReview(workDir, task.prompt, skillsRoot, task.id, cursorSessionId, signal);
             taskStore.emit_overseer_log(
               task.id,
               codeReview?.fit === "ok"

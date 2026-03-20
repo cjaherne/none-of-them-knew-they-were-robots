@@ -176,10 +176,11 @@ async function planWithAgentCli(
   workDir: string,
   pipelineId: string,
   skillsRoot: string,
+  cursorSessionId?: string | null,
 ): Promise<BigBossResult | null> {
   try {
     const fullPrompt = `${skillContextBlock(skillsRoot)}${BIGBOSS_ROUTING_PROMPT}\n\nTask:\n${prompt}`;
-    const { text, timedOut } = await runPlanner(fullPrompt, workDir, pipelineId, 60_000);
+    const { text, timedOut } = await runPlanner(fullPrompt, workDir, pipelineId, 60_000, cursorSessionId);
 
     if (timedOut) {
       createLogger("bigboss").warn("CLI timed out, falling back to full pipeline", undefined, "status");
@@ -328,6 +329,7 @@ export async function planWithBigBoss(
   pipelineId: string,
   archBrief: string | undefined,
   pipelineMode: PipelineMode,
+  cursorSessionId?: string | null,
 ): Promise<BigBossResult | null> {
   const skillsRoot = resolveSkillsRoot();
   if (process.env.OPENAI_API_KEY) {
@@ -335,7 +337,7 @@ export async function planWithBigBoss(
     if (result) return result;
     createLogger("bigboss").info("OpenAI failed, trying agent CLI fallback", undefined, "flow");
   }
-  return planWithAgentCli(prompt, workDir, pipelineId, skillsRoot);
+  return planWithAgentCli(prompt, workDir, pipelineId, skillsRoot, cursorSessionId);
 }
 
 export async function bigBossSummarize(
@@ -413,6 +415,7 @@ export async function overseerPostDesignReview(
   originalTask: string,
   skillsRoot: string,
   pipelineId: string,
+  cursorSessionId?: string | null,
   signal?: AbortSignal,
 ): Promise<OverseerDesignReviewResult | null> {
   const log = createLogger("overseer");
@@ -430,6 +433,7 @@ export async function overseerPostDesignReview(
       branch: "overseer-review",
       workspaceReady: true,
       trivial: true,
+      cursorSessionId,
     };
 
     log.info("Running Overseer design review as agent", undefined, "flow");
@@ -479,6 +483,7 @@ export async function overseerPostCodeReview(
   originalTask: string,
   skillsRoot: string,
   pipelineId: string,
+  cursorSessionId?: string | null,
   signal?: AbortSignal,
 ): Promise<OverseerCodeReviewResult | null> {
   const log = createLogger("overseer");
@@ -496,6 +501,7 @@ export async function overseerPostCodeReview(
       branch: "overseer-review",
       workspaceReady: true,
       trivial: true,
+      cursorSessionId,
     };
 
     log.info("Running Overseer code review as agent", undefined, "flow");
