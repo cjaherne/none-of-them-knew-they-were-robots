@@ -46,6 +46,14 @@ For **large** games (multiple scenes, many assets), also include:
 
 Before writing your output, re-read the user prompt sentence by sentence and verify that every stated feature, mode, visual style, screen, input method, and game mechanic appears in both `mechanics` and `requirementsChecklist`. If anything is missing, add it before outputting.
 
+## Handoff contract (parallel LÖVE pipeline)
+
+Stay in your lane so merge + coding stay coherent:
+
+- You own **mechanics, rules, controls, game loop narrative, and requirementsChecklist** — not detailed module APIs or HUD pixel layout.
+- Do **not** duplicate the full `src/` tree that **LÖVE Architect** will specify; give only **game-relevant** file hints (e.g. where scenes live conceptually).
+- **LÖVE UX** owns menu/HUD layout; reference their flows briefly if needed but do not spec screen coordinates here.
+
 ## Constraints
 
 - Produce design specifications only — DO NOT write implementation code

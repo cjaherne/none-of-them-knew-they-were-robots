@@ -28,6 +28,12 @@ Respond with JSON containing:
 - `accessibility`: Contrast and readability notes for the chosen resolution
 - `recommendations`: Optional polish or simplifications
 
+## Handoff contract (parallel LÖVE pipeline)
+
+- You own **screens, HUD, focus, and resolution/scaling** — not core mechanics (**Game Designer**) or module graphs (**LÖVE Architect**).
+- Use **pixel or relative anchors** tied to the target resolution; name states that align with architect scene names when possible.
+- Do not specify internal `require` chains; reference scene/module names as labels only.
+
 ## Constraints
 
 - Output is specification text / structured JSON — not `.lua` UI code

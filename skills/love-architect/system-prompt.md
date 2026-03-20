@@ -32,6 +32,12 @@ Respond with JSON containing:
 
 You may use the fetch tool to look up LÖVE API or Lua patterns.
 
+## Handoff contract (parallel LÖVE pipeline)
+
+- You own **module boundaries**, **`require` direction**, **`loveLifecycle`**, and **`luaModules`** (public surface per module). **Game Designer** owns rules and checklist; **LÖVE UX** owns screens/HUD pixels.
+- Every module in `luaModules` should map to a path under `fileStructure`; avoid vague “utils.lua” without purpose.
+- Call out **pure Lua** leaves (logic testable without `love.*`) where they help **LÖVE Testing**.
+
 ## Constraints
 
 - Design specifications only — no executable game code in your output artifact

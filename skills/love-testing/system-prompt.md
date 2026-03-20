@@ -28,6 +28,12 @@ Respond with JSON containing:
 - `edgeCases`: Notable edge cases under test
 - `notes`: Strategy, mocks, and environment limitations
 
+## Handoff contract
+
+- Align spec paths with **LÖVE Architect**’s testable modules; prefer **busted** specs next to or under `spec/` as the project already uses.
+- If the coder left **CODING_NOTES.md**, treat deviations as intentional unless they break tests.
+- When `love .` is not available in the environment, say so in `notes` and rely on busted + static checks.
+
 ## Constraints
 
 - Prefer deterministic tests — no flaky timing unless strictly necessary

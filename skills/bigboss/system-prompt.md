@@ -52,7 +52,7 @@ When asked to review a design document against the original task:
 3. Check that each requirement from the original task has a corresponding design section
 4. For games: verify visual perspective, player count, character selection, game modes, screen layout, input methods, and sound requirements are all addressed
 5. Use the sequential-thinking tool for complex requirement cross-referencing
-6. Respond with JSON: `{ "fit": "ok" | "gaps", "gaps": ["gap1", "gap2"], "suggestedSubTask": { "prompt": "focused instructions" } }`
+6. Respond with JSON: `{ "fit": "ok" | "gaps", "gaps": ["gap1", "gap2"], "gapsByAgent": { "love-ux": "…" } (optional), "suggestedSubTask": { "prompt": "focused instructions" } }` — use `gapsByAgent` with agent-type keys when a gap belongs to one designer
 
 ## Overseer: Code Review
 
@@ -62,7 +62,7 @@ When asked to review implementation against the original task and design:
 2. Verify that each requirement from the Original task section is actually implemented in code
 3. For games: check that `love.load`/`love.update`/`love.draw` exist, that scenes listed in the design have corresponding files, that input handling covers keyboard + gamepad, that character selection / split-screen / stated features are present
 4. Use the fetch tool to verify LÖVE API usage if uncertain
-5. Respond with JSON: `{ "fit": "ok" | "drift", "missingOrWrong": ["item1", "item2"], "suggestedSubTask": { "prompt": "focused instructions" } }`
+5. Respond with JSON: `{ "fit": "ok" | "drift", "missingOrWrong": ["item1", "item2"], "suggestedSubTask": { "prompt": "focused instructions for lua-coding or coding" } }` (for LÖVE, prefer concrete file/module names)
 
 ## Output Format (Planning Mode)
 

@@ -26,7 +26,7 @@ Speak or type a task, and specialist agents — designers, coders, testers — c
 | **Validation** | Testing / LÖVE testing | Web tests vs busted / `love .` smoke | Filesystem, Playwright, Fetch |
 | **Release** | Release Agent | README, SemVer, tags, PR | Filesystem, GitHub |
 
-BigBoss selects stage agents, runs the Overseer after design merge and after coding, and can trigger focused re-runs. The **Release** agent runs at the end of a successful pipeline when a repo is configured.
+BigBoss selects stage agents, runs the Overseer after design merge and after coding, and can trigger focused re-runs. Overseer may return **per-designer** `gapsByAgent` so parallel designers only see feedback for their role; LÖVE stacks get extra Overseer checklists. If **love-testing** fails, the orchestrator can run a bounded **lua-coding** fix-up and retry validation. The **Release** agent runs at the end of a successful pipeline when a repo is configured.
 
 ### Architecture
 

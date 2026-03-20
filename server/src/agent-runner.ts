@@ -6,6 +6,7 @@ import * as os from "os";
 import { createLogger } from "@agents/shared";
 import { loadSkillPack, SkillPack } from "./skill-loader";
 import { loadBigBossSystemPromptSync } from "./bigboss-prompt-loader";
+import { OVERSEER_LOVE_CODE_CHECKLIST, OVERSEER_LOVE_DESIGN_CHECKLIST } from "./overseer-love-checklists";
 import { getCursorAgentSessionsMode } from "./cursor-session-policy";
 
 const log = createLogger("agent-runner");
@@ -148,6 +149,8 @@ export interface AgentRunConfig {
   subTaskTotal?: number;
   /** Cursor Agent server-side chat id (`agent create-chat` + `--resume`). */
   cursorSessionId?: string | null;
+  /** When set (love), Overseer review preambles include a LÖVE-specific checklist. */
+  overseerStack?: "web" | "love";
 }
 
 export interface TokenUsage {
@@ -440,10 +443,12 @@ Your job:
 4. For games: verify visual perspective, player count, character selection,
    game modes, screen layout, input methods, and sound requirements.
 5. Respond with ONLY a JSON object on a single line:
-   { "fit": "ok" | "gaps", "gaps": ["gap1", ...], "suggestedSubTask": { "prompt": "instructions" } }
-   If fit is "ok", gaps and suggestedSubTask are optional.
-   If fit is "gaps", list every missing or underspecified requirement in gaps,
-   and provide focused designer instructions in suggestedSubTask.prompt.
+   { "fit": "ok" | "gaps", "gaps": ["gap1", ...],
+     "gapsByAgent": { "agent-type": "instructions for that designer only" } (optional),
+     "suggestedSubTask": { "prompt": "shared instructions when gaps span roles" } }
+   Agent-type keys must match pipeline agents (e.g. game-designer, love-architect, love-ux, ux-designer, core-code-designer, graphics-designer).
+   If fit is "ok", optional fields may be omitted.
+   If fit is "gaps", list gaps; use gapsByAgent when a gap clearly belongs to one designer; use suggestedSubTask for cross-cutting gaps.
 
 DO NOT modify any files. This is a read-only review.
 `.trim();
@@ -784,6 +789,14 @@ function buildFullPrompt(
       const body = skillMd.length > cap ? `${skillMd.slice(0, cap)}\n\n[…truncated…]` : skillMd;
       preamble = `${body}\n\n---\n\n${preamble}`;
     }
+  }
+  if (
+    config.overseerStack === "love" &&
+    (config.category === "design-review" || config.category === "code-review")
+  ) {
+    preamble += `\n\n---\n\n${
+      config.category === "design-review" ? OVERSEER_LOVE_DESIGN_CHECKLIST : OVERSEER_LOVE_CODE_CHECKLIST
+    }`;
   }
   parts.push(preamble);
   if (config.parallelDesign && config.category === "design") {

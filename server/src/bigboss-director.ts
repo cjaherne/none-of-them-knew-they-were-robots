@@ -26,6 +26,7 @@ import {
   resolveSkillsRoot,
   skillPackExists,
 } from "./pipeline-stages";
+import { OVERSEER_LOVE_CODE_CHECKLIST, OVERSEER_LOVE_DESIGN_CHECKLIST } from "./overseer-love-checklists";
 
 export function getBigBossModel(): string {
   return process.env.BIGBOSS_MODEL || "gpt-4o-mini";
@@ -105,11 +106,15 @@ export interface BigBossResult {
 
 export const MAX_OVERSEER_DESIGN_ITERATIONS = 2;
 export const MAX_OVERSEER_CODE_ITERATIONS = 2;
+/** After love-testing fails, re-run lua-coding with output, then retry validation (cap). */
+export const MAX_LOVE_TEST_FIX_ITERATIONS = 2;
 
 export interface OverseerDesignReviewResult {
   fit: "ok" | "gaps";
   gaps?: string[];
   suggestedSubTask?: { prompt: string };
+  /** Optional: agent type → instructions for that designer only (e.g. love-ux, game-designer). */
+  gapsByAgent?: Record<string, string>;
 }
 
 export interface OverseerCodeReviewResult {
@@ -441,9 +446,11 @@ export async function overseerPostDesignReview(
   pipelineId: string,
   cursorSessionId?: string | null,
   signal?: AbortSignal,
+  options?: { stack?: PipelineStack },
 ): Promise<OverseerDesignReviewResult | null> {
   const log = createLogger("overseer");
   const skillBlock = skillContextBlock(skillsRoot);
+  const stack = options?.stack ?? "web";
 
   const agentPrompt = `Review the DESIGN.md in this workspace against the original user task below.\n\n## Original task\n\n${originalTask}`;
   try {
@@ -458,6 +465,7 @@ export async function overseerPostDesignReview(
       workspaceReady: true,
       trivial: true,
       cursorSessionId,
+      overseerStack: stack === "love" ? "love" : undefined,
     };
 
     log.info("Running Overseer design review as agent", undefined, "flow");
@@ -480,7 +488,9 @@ export async function overseerPostDesignReview(
     const { default: OpenAI } = await import("openai");
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const model = getBigBossModel();
-    const systemContent = `${skillBlock}You are BigBoss in Overseer mode. Review the design document against the user's original task. Decide if the design covers every requirement from the Original task section. Respond with JSON only: { "fit": "ok" | "gaps", "gaps": ["gap1", "gap2"] (if fit is gaps, list missing or underspecified requirements), "suggestedSubTask": { "prompt": "focused instructions for designers to address the gaps" } (optional, if fit is gaps) }. Be concise.`;
+    const loveBlock = stack === "love" ? `\n\n${OVERSEER_LOVE_DESIGN_CHECKLIST}\n` : "";
+    const systemContent = `${skillBlock}You are BigBoss in Overseer mode. Review the design document against the user's original task. Decide if the design covers every requirement from the Original task section.${loveBlock}
+Respond with JSON only: { "fit": "ok" | "gaps", "gaps": ["gap1", "gap2"] (if fit is gaps), "gapsByAgent": { "agent-type": "instructions for that designer only" } (optional — use keys: game-designer, love-architect, love-ux for LÖVE parallel designs, or ux-designer, core-code-designer, graphics-designer for web; only include agents whose section must change), "suggestedSubTask": { "prompt": "shared instructions when gaps span multiple roles" } (optional) }. Be concise.`;
     const response = await client.chat.completions.create({
       model,
       messages: [
@@ -509,9 +519,11 @@ export async function overseerPostCodeReview(
   pipelineId: string,
   cursorSessionId?: string | null,
   signal?: AbortSignal,
+  options?: { stack?: PipelineStack },
 ): Promise<OverseerCodeReviewResult | null> {
   const log = createLogger("overseer");
   const skillBlock = skillContextBlock(skillsRoot);
+  const stack = options?.stack ?? "web";
 
   const agentPrompt = `Review the implementation in this workspace against the original user task and DESIGN.md.\n\n## Original task\n\n${originalTask}`;
   try {
@@ -526,6 +538,7 @@ export async function overseerPostCodeReview(
       workspaceReady: true,
       trivial: true,
       cursorSessionId,
+      overseerStack: stack === "love" ? "love" : undefined,
     };
 
     log.info("Running Overseer code review as agent", undefined, "flow");
@@ -560,7 +573,9 @@ export async function overseerPostCodeReview(
     const { default: OpenAI } = await import("openai");
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const model = getBigBossModel();
-    const systemContent = `${skillBlock}You are BigBoss in Overseer mode. Review implementation against the design and original task. You receive the design document, a file tree, AND the actual content of key source files. Verify that each requirement from the Original task is implemented in the source code, not just that a file exists. Respond with JSON only: { "fit": "ok" | "drift", "missingOrWrong": ["item1", "item2"] (if fit is drift), "suggestedSubTask": { "prompt": "focused instructions for the coder to add or fix these items" } (optional, if fit is drift) }. Be concise.`;
+    const loveBlock = stack === "love" ? `\n\n${OVERSEER_LOVE_CODE_CHECKLIST}\n` : "";
+    const systemContent = `${skillBlock}You are BigBoss in Overseer mode. Review implementation against the design and original task. You receive the design document, a file tree, AND the actual content of key source files. Verify that each requirement from the Original task is implemented in the source code, not just that a file exists.${loveBlock}
+Respond with JSON only: { "fit": "ok" | "drift", "missingOrWrong": ["item1", "item2"] (if fit is drift), "suggestedSubTask": { "prompt": "focused instructions for the coder to add or fix these items" } (optional, if fit is drift) }. Be concise.`;
     const response = await client.chat.completions.create({
       model,
       messages: [
