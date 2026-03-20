@@ -1,10 +1,11 @@
 {
   "name": "none-of-them-knew-they-were-robots",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "private": true,
   "description": "Voice-controlled multi-agent AI design and development team (web UI + Node server + Cursor CLI)",
   "workspaces": [
     "packages/shared",
+    "packages/openai-sprite-mcp",
     "server"
   ],
   "scripts": {

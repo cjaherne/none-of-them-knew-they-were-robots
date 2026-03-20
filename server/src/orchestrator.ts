@@ -41,6 +41,7 @@ import {
   groupStages,
   resolveSkillsRoot,
   inferStackFromAgents,
+  injectPostDesignGameArt,
   type StageDefinition,
   type PipelineStack,
 } from "./pipeline-stages";
@@ -624,6 +625,11 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
     log.info(`Pipeline stages: ${stages.map((s) => s.name).join(" -> ")}`, { mode: task.pipelineMode }, "flow");
   }
 
+  stages = injectPostDesignGameArt(stages);
+  if (stages.some((s) => s.agent === "game-art")) {
+    log.info("Pipeline includes post-design game-art stage (LÖVE + OPENAI_API_KEY)", undefined, "flow");
+  }
+
   stages = [...stages, RELEASE_STAGE];
 
   const pipelineStack: PipelineStack = inferStackFromAgents(stages.map((s) => s.agent));
@@ -635,7 +641,8 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
   }));
   taskStore.setStages(task.id, initialStages);
 
-  let stageGroups = planned?.stageGroups || groupStages(stages, false);
+  const parallelDesignForGroups = planned?.parallelDesign ?? false;
+  let stageGroups = groupStages(stages, parallelDesignForGroups);
   const hasRelease = stageGroups.some((g) => g.stageDefs.some((s) => s.name === "release"));
   if (!hasRelease) {
     stageGroups = [...stageGroups, { name: "release", parallel: false, agents: [{ type: "release" }], stageDefs: [RELEASE_STAGE] }];
@@ -936,7 +943,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
 
         const briefKey = stage.agent;
         const releaseBrief = stage.category === "release"
-          ? `Target base branch for PR: ${task.baseBranch}. Use this for \`git log ${task.baseBranch}..HEAD\` and \`gh pr create --base ${task.baseBranch}\`.`
+          ? `Release stage = **merge-to-main** workflow: pipeline branch is \`${task.branch}\`; merge target (base) is \`${task.baseBranch}\`. Use \`git log ${task.baseBranch}..HEAD\`, \`gh pr create --base ${task.baseBranch}\`, then \`gh pr merge --squash --delete-branch\`, then checkout ${task.baseBranch}, pull, annotated tag \`v<version>\` on mainline, push tag. Run \`npm run build\` (or project build) after push and before PR. Do not stop at an open PR — complete merge and tag per \`skills/release/system-prompt.md\`.`
           : null;
 
         let subTasks: string[] | null = null;

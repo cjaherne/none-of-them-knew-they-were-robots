@@ -414,21 +414,45 @@ Your job:
 Write tests to disk and execute them; summarize results and gaps.
 `.trim();
 
+const PREAMBLE_GAME_ART = `
+You are running as a local CLI agent with full file-system access.
+Your role is **game-art** — a post-design, **pre-coding** pass for LÖVE games only.
+
+You must NOT write gameplay Lua, conf.lua, or main.lua logic. You generate **raster PNGs**
+using the **generate_sprite** MCP tool (OpenAI DALL-E 3). Then write **ASSETS.md** in the
+workspace root listing every file path, intended use in-game, and a note that images are
+full DALL-E resolution (typically 1024px) — the coder should scale with love.graphics.draw
+or equivalent.
+
+1. READ full **DESIGN.md** and **REQUIREMENTS.md** from disk (previews below may truncate).
+2. READ upstream **.pipeline/*.handoff.md** from designers for art-relevant hints.
+3. Create **assets/sprites/** (or similar) and generate coherent pixel-style sprites
+   (characters, projectiles, key UI icons if specified). Use consistent palette cues in prompts.
+4. Call **generate_sprite** with repo-relative paths ending in **.png** and strong pixel-art prompts.
+5. Write **ASSETS.md**: table or list of path → description → suggested draw scale.
+6. Optionally add **.pipeline/game-art.handoff.md** notes if the skill expects it (handoff is also auto-summarized from your run).
+
+Do not run the full game build unless needed to verify paths; focus on assets + ASSETS.md.
+`.trim();
+
 const PREAMBLE_RELEASE = `
 You are running as a local CLI agent with full file-system and git access.
-Your role in this pipeline is RELEASE PREP — prepare the branch for a Pull Request.
+Your role is the **Release** stage: follow the same **merge-to-main** workflow as
+the project's Cursor skill (see \`skills/release/system-prompt.md\` on disk — pre-flight,
+README, semver bump, one release-prep commit, push, **build must pass**, PR, **merge**, tag on base).
 
-You must:
-1. Update the README based on the branch's changes
-2. Bump the version in the appropriate version file (package.json, pom.xml, Cargo.toml, pyproject.toml, Chart.yaml, or build.gradle) using SemVer
-3. Commit all changes with a conventional commit message
-4. Push the branch
-5. Create and push a tag for the new version after pushing the branch
-6. Create a PR to the base branch using \`gh pr create\`
+Execute in order:
+1. **Pre-flight:** \`git status\`; \`git branch --show-current\` — you must NOT be on the base branch (e.g. main). \`git log <BASE_BRANCH>..HEAD\` for PR/README context.
+2. **README** — integrate this branch's changes naturally (no raw changelog dump).
+3. **Version** — bump SemVer in the primary version file (root package.json when present, else pom/Cargo/pyproject/etc.).
+4. **Commit** — conventional commit with body; mention old → new version.
+5. **Push** — \`git push -u origin HEAD\`
+6. **Build** — \`npm run build\` from repo root when applicable, or the project's build; fix failures before continuing.
+7. **PR** — \`gh pr create --base <BASE_BRANCH>\` with Summary / Changes / Version / Test plan sections (see release skill).
+8. **Merge** — \`gh pr merge --squash --delete-branch\` (do not leave the PR open by default).
+9. **Tag on base** — \`git checkout <BASE_BRANCH> && git pull\`, then \`git tag -a v<version> -m "..."\`, \`git push origin v<version>\`.
 
-The BASE_BRANCH for the PR is provided in the task context below. Use it for \`git log <BASE_BRANCH>..HEAD\` and \`gh pr create --base <BASE_BRANCH>\`.
-
-Do NOT merge the PR. Create and push a tag for the new version after pushing the branch.
+The BASE_BRANCH and pipeline branch are in the task context below. Never force-push to main. Report PR URL, version, tag, and summary when done.
 `.trim();
 
 const PREAMBLE_DESIGN_REVIEW = `
@@ -493,6 +517,7 @@ function getPreamble(category: string, parallelDesign?: boolean, agentType?: str
     case "design": return parallelDesign ? PREAMBLE_DESIGN_PARALLEL : PREAMBLE_DESIGN;
     case "coding": return PREAMBLE_CODING;
     case "validation": return PREAMBLE_TESTING;
+    case "game-art": return PREAMBLE_GAME_ART;
     case "release": return PREAMBLE_RELEASE;
     case "design-review": return PREAMBLE_DESIGN_REVIEW;
     case "code-review": return PREAMBLE_CODE_REVIEW;
@@ -740,6 +765,18 @@ export function buildContextBrief(
       }
       break;
 
+    case "game-art":
+      brief.fileTree = getFileTree(workDir);
+      brief.designDoc = getDesignDoc(workDir, 24000);
+      brief.projectFiles = getProjectFiles(workDir, 1500);
+      if (upstreamResults) {
+        for (const r of upstreamResults) {
+          const content = getHandoffContent(workDir, r.agent);
+          if (content) brief.handoffContent[r.agent] = content;
+        }
+      }
+      break;
+
     case "validation":
       brief.fileTree = getFileTree(workDir);
       brief.designDoc = getDesignDoc(
@@ -856,7 +893,8 @@ function buildFullPrompt(
     parts.push("");
   }
 
-  const useDiskBasedContext = config.category === "coding" || config.category === "validation";
+  const useDiskBasedContext =
+    config.category === "coding" || config.category === "validation" || config.category === "game-art";
 
   if (brief.designDoc) {
     if (useDiskBasedContext) {
@@ -878,14 +916,16 @@ function buildFullPrompt(
     parts.push("");
   }
 
-  if (config.category === "coding") {
+  if (config.category === "coding" || config.category === "game-art") {
     try {
       const reqPath = path.join(workDir, "REQUIREMENTS.md");
       const req = readFileSync(reqPath, "utf-8");
       if (req.trim()) {
         parts.push("## REQUIREMENTS.md (preview)");
         parts.push(
-          "Read the full REQUIREMENTS.md from disk. Implement each requirement id (R1, R2, …) or document deferral under **Deviations** in CODING_NOTES.md.",
+          config.category === "game-art"
+            ? "Read the full REQUIREMENTS.md from disk. Cover presentation / visual requirements with generated assets or note gaps in ASSETS.md."
+            : "Read the full REQUIREMENTS.md from disk. Implement each requirement id (R1, R2, …) or document deferral under **Deviations** in CODING_NOTES.md.",
         );
         parts.push("```markdown");
         const cap = 6000;
@@ -1058,6 +1098,27 @@ export async function setupWorkspace(config: AgentRunConfig): Promise<string> {
   return workDir;
 }
 
+/** Replace sentinels in MCP JSON (written per workspace clone). */
+function deepReplaceMcpPlaceholders(value: unknown, workDir: string, skillsRoot: string): unknown {
+  const openaiSpriteEntry = path.resolve(skillsRoot, "..", "packages", "openai-sprite-mcp", "dist", "index.js");
+  if (typeof value === "string") {
+    return value
+      .replaceAll("__PIPELINE_WORKSPACE__", workDir)
+      .replaceAll("__OPENAI_SPRITE_MCP_ENTRY__", openaiSpriteEntry);
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => deepReplaceMcpPlaceholders(v, workDir, skillsRoot));
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = deepReplaceMcpPlaceholders(v, workDir, skillsRoot);
+    }
+    return out;
+  }
+  return value;
+}
+
 /**
  * Injects skill pack files (.cursor/rules, mcp.json) and commits them
  * so they don't show up in the agent's "modified files" diff.
@@ -1065,6 +1126,7 @@ export async function setupWorkspace(config: AgentRunConfig): Promise<string> {
 async function injectSkillPack(
   workDir: string,
   skillPack: SkillPack,
+  skillsRoot: string,
 ): Promise<void> {
   if (skillPack.cursorRules && Object.keys(skillPack.cursorRules).length > 0) {
     const rulesDir = path.join(workDir, ".cursor", "rules");
@@ -1077,9 +1139,10 @@ async function injectSkillPack(
   if (skillPack.mcpConfig) {
     const cursorDir = path.join(workDir, ".cursor");
     await fs.mkdir(cursorDir, { recursive: true });
+    const resolved = deepReplaceMcpPlaceholders(skillPack.mcpConfig, workDir, skillsRoot) as Record<string, unknown>;
     await fs.writeFile(
       path.join(cursorDir, "mcp.json"),
-      JSON.stringify(skillPack.mcpConfig, null, 2),
+      JSON.stringify(resolved, null, 2),
       "utf-8",
     );
   }
@@ -1355,7 +1418,7 @@ export async function runAgent(
   const baseTimeout = config.trivial ? 120_000 : 1_200_000;
   const timeoutMs = Math.max(skillPack.constraints.timeoutMs, baseTimeout);
 
-  await injectSkillPack(workDir, skillPack);
+  await injectSkillPack(workDir, skillPack, config.skillsRoot);
 
   const fullPrompt = buildFullPrompt(config, skillPack, workDir);
   onEvent?.({ type: "log", content: `Running agent in ${workDir}` });

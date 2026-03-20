@@ -80,6 +80,15 @@ agents:
       cpu: "1"
     cursorFlags: ["--force", "--trust", "--output-format", "stream-json"]
 
+  - type: game-art
+    displayName: Game Art (LÖVE sprites)
+    category: design
+    skillPack: game-art
+    resources:
+      memory: "2Gi"
+      cpu: "1"
+    cursorFlags: ["--force", "--trust", "--output-format", "stream-json"]
+
   - type: coding
     displayName: Coding Agent
     category: coding

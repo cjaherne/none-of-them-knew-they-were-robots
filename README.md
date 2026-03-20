@@ -10,7 +10,9 @@ A voice-controlled multi-agent AI design and development team: a **web UI**, a *
 
 **Version 2.3** — **LÖVE-focused agents** (`love-architect`, `love-ux`, `love-testing`) and separate web vs LÖVE pipeline stages; web designer/testing prompts no longer cover Lua games. BigBoss can set `stack: "love"` for LÖVE tasks. Overseer supports **per-designer** `gapsByAgent`, LÖVE-specific review checklists, and a bounded **love-testing → lua-coding** retry when validation fails.
 
-**Version 2.4** — **Requirements traceability**: `REQUIREMENTS.md` is generated from each task prompt and linked into `DESIGN.md` after merge; coders see a preview in their prompt. Optional **requirements approval** in the web UI (sidebar) pauses the pipeline for human review before design. **LÖVE complex tasks** use stack-aware **sub-task decomposition** (locomotion and core gameplay before polish). Overseer **code review** explicitly checks **persistent scores** vs RAM-only drift. Optional **`LOVE_SMOKE_CHECKLIST=1`** runs a post-coding JSON smoke hint (movement / persistence). Skill packs updated for in-world visuals, locomotion-first input, and love-testing smoke notes.
+**Version 2.4** — **Requirements traceability**: `REQUIREMENTS.md` from each task prompt, linked into `DESIGN.md` after merge; optional **requirements approval** in the web UI. **LÖVE** stack-aware **sub-task decomposition** (locomotion before polish). Overseer **code review** checks **persistent scores** vs RAM-only drift. Optional **`LOVE_SMOKE_CHECKLIST=1`**. Skill packs: in-world visuals, locomotion-first input, love-testing smoke notes.
+
+**Version 2.5** — **Game-art (LÖVE)**: post-design **game-art** stage uses OpenAI **DALL-E 3** via [`packages/openai-sprite-mcp`](packages/openai-sprite-mcp) (`generate_sprite` MCP) when `OPENAI_API_KEY` is set; **ASSETS.md** + PNGs under `assets/` before `lua-coding`. **MCP injection** resolves `__OPENAI_SPRITE_MCP_ENTRY__` and `__PIPELINE_WORKSPACE__` in `.cursor/mcp.json` per clone. **Release** stage instructions match the **merge-to-main** Cursor skill: push, **`npm run build`**, `gh pr create`, **`gh pr merge --squash --delete-branch`**, then annotated **tag on `main`** (see [`skills/release/system-prompt.md`](skills/release/system-prompt.md)).
 
 ## Overview
 
@@ -26,9 +28,10 @@ Speak or type a task, and specialist agents — designers, coders, testers — c
 | **Design** | Graphics Designer | Visual tokens, CSS, web UI | Filesystem, Fetch |
 | **Design** | Game Designer | Mechanics, controls, LÖVE game structure | Filesystem, Fetch, Sequential Thinking |
 | **Design** | LÖVE Architect / LÖVE UX | Lua modules, scenes/HUD (LÖVE games) | Filesystem, Fetch (Architect also GitHub) |
+| **Design** | **Game Art** | Post-design PNG sprites via **DALL-E 3** (MCP `generate_sprite`); **ASSETS.md** — runs only for LÖVE when `OPENAI_API_KEY` is set | Filesystem, Fetch, **openai-sprite-mcp** |
 | **Coding** | Coding / Lua coding | Web vs LÖVE implementation | Filesystem, GitHub, Fetch |
 | **Validation** | Testing / LÖVE testing | Web tests vs busted / `love .` smoke | Filesystem, Playwright, Fetch |
-| **Release** | Release Agent | README, SemVer, tags, PR | Filesystem, GitHub |
+| **Release** | Release Agent | Same workflow as **merge-to-main**: README, SemVer, push, **build**, PR, **squash-merge**, tag on `main` | Filesystem, GitHub |
 
 BigBoss selects stage agents, runs the Overseer after design merge and after coding, and can trigger focused re-runs. **Design gaps** (post-merge design review) may re-run only the parallel designers listed in **`gapsByAgent`** when that set is a proper subset of the group; otherwise all parallel designers re-run. That is separate from **code drift** (post-coding review), which triggers a **single coding** fix-up (with optional **`focusPaths`**) and may run **one follow-up** code review if iteration budget allows — it does **not** re-run designers. LÖVE stacks get extra Overseer checklists. If **love-testing** fails, the orchestrator can run a bounded **lua-coding** fix-up and retry validation. The **Release** agent runs at the end of a successful pipeline when a repo is configured.
 
@@ -98,16 +101,17 @@ flowchart TD
   OD -->|gaps| D
   OD -->|ok| DA{Design approval enabled?}
   DA -->|yes| H2[Human: approve / revise design]
-  DA -->|no| C[Coding + optional sub-tasks]
-  H2 -->|approve| C
+  DA -->|no| GArt[game-art DALL-E 3 if LÖVE]
+  H2 -->|approve| GArt
   H2 -->|revise| D
+  GArt --> C[Coding + optional sub-tasks]
   C --> V[Lint / optional love runtime verify]
   V --> OC[Overseer code review + drift fix-ups]
   OC --> SK{LOVE_SMOKE_CHECKLIST=1 and LÖVE stack?}
   SK -->|yes| SM[Optional smoke JSON log]
   SK -->|no| T[Testing stage]
   SM --> T
-  T --> RL[Release if repo configured]
+  T --> RL[Release: build PR merge squash tag on main]
 ```
 
 ### Parallel design merge and Overseer
@@ -154,6 +158,7 @@ Skill packs are read from `skills/` on disk (`SKILLS_ROOT` overrides the path).
 ├── server/                 Node server (Express, SQLite, orchestration)
 ├── web/                    Browser UI (HTML/JS/CSS; served by server)
 ├── packages/shared/        Shared types, logging, safety helpers
+├── packages/openai-sprite-mcp/  Stdio MCP: DALL-E 3 → PNG (game-art agent)
 └── skills/                 Agent skill packs + registry.yaml
 ```
 
@@ -199,7 +204,7 @@ Structured logs and task history use SQLite at **`server/data/logs.db`**. Notabl
 
 ## How it works
 
-The server loads skill packs from `skills/` (or `SKILLS_ROOT`), prepares the workspace (clone/checkout optional), writes Cursor rules and MCP config into the workspace, builds **per-stage prompts** in [`agent-runner`](server/src/agent-runner.ts), and runs the **Cursor Agent CLI** (`agent`, or `CURSOR_CLI`). BigBoss planning and Overseer reviews use the same persona file [`skills/bigboss/system-prompt.md`](skills/bigboss/system-prompt.md) where applicable. When a **git repo** is configured, successful pipelines **push** the branch and the **release** agent can bump version, commit, tag, and open a PR. See **Workflow and agent interactions** above for the full stage diagram.
+The server loads skill packs from `skills/` (or `SKILLS_ROOT`), prepares the workspace (clone/checkout optional), writes Cursor rules and MCP config into the workspace, builds **per-stage prompts** in [`agent-runner`](server/src/agent-runner.ts), and runs the **Cursor Agent CLI** (`agent`, or `CURSOR_CLI`). BigBoss planning and Overseer reviews use the same persona file [`skills/bigboss/system-prompt.md`](skills/bigboss/system-prompt.md) where applicable. When a **git repo** is configured, the **release** stage runs the **merge-to-main** flow: README + SemVer, push, **`npm run build`**, `gh pr create`, **`gh pr merge --squash --delete-branch`**, then an annotated **tag on `main`**. See **Workflow and agent interactions** above for the full stage diagram.
 
 ## Development
 
@@ -220,7 +225,8 @@ The `web/` package has a simple `npm run dev` (static serve) if you want to iter
 
 | Variable | Purpose | Required |
 |----------|---------|----------|
-| `OPENAI_API_KEY` | Routing, Whisper, summaries, merge/overseer fallbacks | Optional |
+| `OPENAI_API_KEY` | Routing, Whisper, summaries, merge/overseer fallbacks, **game-art** DALL-E 3 | Optional |
+| `OPENAI_IMAGE_MODEL` | Image model for game-art MCP (default `dall-e-3`) | Optional |
 | `PORT` | Listen port (default `3000`) | Optional |
 | `SKILLS_ROOT` | Override skills directory | Optional |
 | `CURSOR_CLI` | Override Cursor agent binary | Optional |

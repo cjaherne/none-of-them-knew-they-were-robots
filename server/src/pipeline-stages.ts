@@ -46,6 +46,11 @@ export const PARALLEL_LOVE_DESIGNERS: StageDefinition[] = [
   { name: "love-ux", agent: "love-ux", category: "design" },
 ];
 
+/** Post-design raster pass for LÖVE games (OpenAI DALL-E 3 via MCP); injected before lua-coding when applicable. */
+export const GAME_ART_STAGE: StageDefinition = { name: "game-art", agent: "game-art", category: "game-art" };
+
+export const RELEASE_STAGE: StageDefinition = { name: "release", agent: "release", category: "release" };
+
 /** Maps BigBoss agent type string to StageDefinition (for full stages[].agents[] format) */
 export const AGENT_TYPE_TO_DEF: Record<string, StageDefinition> = {
   "ux-designer": { name: "ux-design", agent: "ux-designer", category: "design" },
@@ -58,9 +63,8 @@ export const AGENT_TYPE_TO_DEF: Record<string, StageDefinition> = {
   "lua-coding": { name: "coding", agent: "lua-coding", category: "coding" },
   testing: { name: "validation", agent: "testing", category: "validation" },
   "love-testing": { name: "validation", agent: "love-testing", category: "validation" },
+  "game-art": GAME_ART_STAGE,
 };
-
-export const RELEASE_STAGE: StageDefinition = { name: "release", agent: "release", category: "release" };
 
 export function resolveSkillsRoot(): string {
   return process.env.SKILLS_ROOT || path.resolve(__dirname, "..", "..", "skills");
@@ -108,6 +112,9 @@ export function getFullStagesForStack(stack: PipelineStack): StageDefinition[] {
 /** Infer LÖVE vs web from agents already chosen (full-format BigBoss or injection). */
 export function inferStackFromAgents(agentIds: string[]): PipelineStack {
   const set = new Set(agentIds);
+  if (set.has("game-art")) {
+    return "love";
+  }
   if (
     set.has("lua-coding") ||
     set.has("love-testing") ||
@@ -178,4 +185,33 @@ export function groupStages(stages: StageDefinition[], parallelDesign: boolean):
   }
 
   return groups;
+}
+
+/**
+ * Inserts game-art after the last design stage before coding (LÖVE only), when skill + API key exist.
+ * stageGroups must be rebuilt with groupStages(stages, parallelDesign) after calling this.
+ */
+export function injectPostDesignGameArt(stages: StageDefinition[]): StageDefinition[] {
+  const stack = inferStackFromAgents(stages.map((s) => s.agent));
+  if (stack !== "love") return stages;
+  if (!skillPackExists("game-art")) return stages;
+  if (!process.env.OPENAI_API_KEY?.trim()) {
+    createLogger("orchestrator").info("Skipping game-art stage: OPENAI_API_KEY not set", undefined, "flow");
+    return stages;
+  }
+  const codingIdx = stages.findIndex((s) => s.category === "coding");
+  if (codingIdx === -1) return stages;
+  const hasDesignBeforeCoding = stages.slice(0, codingIdx).some((s) => s.category === "design");
+  if (!hasDesignBeforeCoding) return stages;
+  if (stages.some((s) => s.agent === "game-art")) return stages;
+
+  let lastDesignIdx = -1;
+  for (let i = 0; i < codingIdx; i++) {
+    if (stages[i].category === "design") lastDesignIdx = i;
+  }
+  if (lastDesignIdx === -1) return stages;
+
+  const next = [...stages];
+  next.splice(lastDesignIdx + 1, 0, { ...GAME_ART_STAGE });
+  return next;
 }
