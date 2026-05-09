@@ -6,10 +6,10 @@
  *
  * Per-designer contributions land in `.pipeline/<agent>-spec.md`; this module
  * merges them at the end of the parallel-design step, mirroring the existing
- * `mergeDesignOutputs()` flow but per artefact. Single-designer pipelines write
- * spec.md directly from the merged DESIGN.md as a transitional fallback so PR1
- * is useful even before designer skill prompts are updated to write per-artefact
- * outputs.
+ * `mergeDesignOutputs()` flow but per artefact. PR4 default-on: designer skill
+ * packs now write the contribution natively. The DESIGN.md fallback path
+ * remains as a safety net for code-only mode, single-designer pipelines, or
+ * any designer that hasn't been updated yet.
  */
 import { promises as fs } from "fs";
 import * as path from "path";

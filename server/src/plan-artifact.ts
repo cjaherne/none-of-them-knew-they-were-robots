@@ -191,25 +191,10 @@ export async function readPlanMd(workDir: string): Promise<string> {
   }
 }
 
-/**
- * Compatibility shim: write a back-compat DESIGN.md that concatenates spec.md +
- * plan.md, so legacy readers (Overseer prompts, coding agent prompts that still
- * reference DESIGN.md, manual editors) keep working through the v2 transition.
- * This shim is removed in Tier 2 PR4 once all readers have been migrated.
- */
-export async function writeDesignCompatShim(workDir: string): Promise<void> {
-  const log = createLogger("plan");
-  const specPath = path.join(workDir, "spec.md");
-  const planPath = path.join(workDir, PLAN_FILE);
-  const [spec, plan] = await Promise.all([
-    fs.readFile(specPath, "utf-8").catch(() => ""),
-    fs.readFile(planPath, "utf-8").catch(() => ""),
-  ]);
-  if (!spec.trim() && !plan.trim()) return;
-  const parts: string[] = [];
-  if (spec.trim()) parts.push(spec.trim());
-  if (plan.trim()) parts.push(plan.trim());
-  const out = parts.join("\n\n---\n\n") + "\n";
-  await fs.writeFile(path.join(workDir, "DESIGN.md"), out, "utf-8");
-  log.info("Wrote DESIGN.md (v2 compatibility shim from spec.md + plan.md)", undefined, "flow");
-}
+// Note: an earlier draft exported `writeDesignCompatShim()` here that wrote a
+// concatenated `DESIGN.md = spec.md + plan.md` for legacy readers. It was
+// never wired into the orchestrator — the existing parallel-design merge
+// already keeps DESIGN.md current for v1 callers — so the function was
+// removed in Tier 2 PR4 to avoid dead code. If a future PR needs the shim
+// (e.g. when designers stop writing DESIGN.md entirely), reintroduce it from
+// the git history.

@@ -247,15 +247,18 @@ async function readDesignPreview(workDir: string): Promise<string> {
 /**
  * Run the v2 artefact writers (spec.md, plan.md, optional research.md /
  * data-model.md / contracts/, plus CHECKLISTS.md) in addition to today's
- * DESIGN.md. No-op when ARTEFACT_SCHEMA is unset or "v1".
+ * DESIGN.md. No-op when ARTEFACT_SCHEMA=v1 (the explicit opt-out).
  *
- * PR1 transition: when designers haven't been updated to write per-artefact
- * `.pipeline/<agent>-{spec,plan}.md` files yet, mergeSpecContributions /
- * mergePlanContributions fall back to deriving the body from the merged
- * DESIGN.md so the v2 artefacts still appear in the workspace. DESIGN.md is
- * NOT overwritten in PR1 — the compat shim (writeDesignCompatShim) is reserved
- * for a follow-up PR once at least one designer is producing per-artefact
- * outputs.
+ * PR4 default flip: ARTEFACT_SCHEMA defaults to v2. Designer skill packs now
+ * write per-artefact `.pipeline/<agent>-spec.md` / `.pipeline/<agent>-plan.md`
+ * contributions natively. mergeSpecContributions / mergePlanContributions
+ * still fall back to deriving from the merged DESIGN.md when a designer hasn't
+ * produced its contribution (older skill packs, code-only mode, etc.) so the
+ * v2 artefacts always appear in the workspace.
+ *
+ * DESIGN.md is left untouched here — the existing parallel-design merge
+ * continues to write it for back-compat with Overseer prompts and coding-agent
+ * fallbacks until a follow-up PR retires the v1 paths entirely.
  */
 async function runV2ArtefactWriters(
   taskId: string,
