@@ -87,18 +87,28 @@ export interface ChecklistStageOutcome {
 
 /**
  * Heuristic: extract repo-relative path-like substrings from failed item
- * text. Matches forward-slash paths with file extensions and known directory
- * prefixes. Conservative — only well-formed paths so the coder's focusPaths
- * block doesn't fill with garbage.
+ * text. Matches forward-slash paths with file extensions covering source code
+ * (ts/lua/py/etc), data (json/yaml/toml), markup (md/html/css), and common
+ * game/web assets (png/jpg/wav/ttf/etc). Conservative — only well-formed
+ * paths so the coder's focusPaths block doesn't fill with garbage.
+ *
+ * URLs are stripped from the input first so paths embedded in URLs (e.g.
+ * `https://example.com/api/users.json`) don't leak into the result.
+ *
+ * Exported for unit testing; not part of the stable orchestrator surface.
+ * @internal
  */
-function deriveFocusPathsFromFailed(failed: string[]): string[] {
+export function deriveFocusPathsFromFailed(failed: string[]): string[] {
   const paths = new Set<string>();
-  const pathRe = /(?:\b|`)([a-zA-Z0-9_./-]+\.(?:ts|tsx|js|jsx|lua|py|go|rs|java|cs|md|json|yaml|yml|toml|html|css|scss))\b/g;
+  const URL_RE = /\bhttps?:\/\/\S+/gi;
+  const pathRe =
+    /(?:\b|`)([a-zA-Z0-9_./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|lua|py|go|rs|java|cs|md|json|yaml|yml|toml|html|css|scss|png|jpg|jpeg|gif|webp|svg|wav|ogg|mp3|ttf|otf))\b/g;
   for (const f of failed) {
+    const cleaned = f.replace(URL_RE, " ");
     let m: RegExpExecArray | null;
-    while ((m = pathRe.exec(f)) !== null) {
+    while ((m = pathRe.exec(cleaned)) !== null) {
       const candidate = m[1].trim();
-      if (candidate.length > 0 && candidate.length <= 200 && !candidate.startsWith("http")) {
+      if (candidate.length > 0 && candidate.length <= 200) {
         paths.add(candidate);
       }
     }
