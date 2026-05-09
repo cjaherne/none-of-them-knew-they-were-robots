@@ -14,6 +14,8 @@ A voice-controlled multi-agent AI design and development team: a **web UI**, a *
 
 **Version 2.5** — **Game-art (LÖVE)**: post-design **game-art** stage uses OpenAI **DALL-E 3** via [`packages/openai-sprite-mcp`](packages/openai-sprite-mcp) (`generate_sprite` MCP) when `OPENAI_API_KEY` is set; **ASSETS.md** + PNGs under `assets/` before `lua-coding`. **MCP injection** resolves `__OPENAI_SPRITE_MCP_ENTRY__` and `__PIPELINE_WORKSPACE__` in `.cursor/mcp.json` per clone. **Release** stage instructions match the **merge-to-main** Cursor skill: push, **`npm run build`**, `gh pr create`, **`gh pr merge --squash --delete-branch`**, then annotated **tag on `main`** (see [`skills/release/system-prompt.md`](skills/release/system-prompt.md)).
 
+**Version 2.6** — **Spec-kit Tier 1 + Tier 2 (PR1–PR3, additive)**: a project-wide **`constitution.md`** (governance) is prepended to every agent prompt, and **`TASKS.md`** (dependency-aware task list with file paths + R-numbered links) is generated after the design merge so coding agents have an executable plan. An opt-in **`ARTEFACT_SCHEMA=v2`** flag enables the v2 artefact tree — **`spec.md`** (what/why), **`plan.md`** (how), **`CHECKLISTS.md`** (acceptance + smoke + governance) — alongside a back-compat `DESIGN.md` shim. Three new Overseer sub-stages replace the inline post-design / post-coding reviews when the flag is set: **`clarify`** (rewinds parallel design on gaps and appends clarifications to `spec.md`), **`analyze`** (drift detection with bounded coding fix-ups), and **`checklist`** (read-only `CHECKLISTS.md` review with one auto-fix; advisory by default, blocking under `CHECKLIST_BLOCKING=1`). **`LOVE_SMOKE_CHECKLIST`** is now **deprecated for v2** (the stack-agnostic `checklist` stage inherits the same bullets). First **server unit test suite** ships under `server/test/` (Node 20+ built-in `node:test` runner; `npm test` in `server/` or via the workspace runner from the repo root).
+
 ## Overview
 
 Speak or type a task, and specialist agents — designers, coders, testers — collaborate via Cursor CLI to complete it. New agent types are added mostly through **skill packs** under `skills/`, not by changing the server core.
@@ -217,6 +219,11 @@ cd server && npm run dev
 # Type-check
 npx tsc --noEmit -p packages/shared/tsconfig.json
 npx tsc --noEmit -p server/tsconfig.json
+
+# Run server unit tests (Node 20+ built-in test runner; covers ARTEFACT_SCHEMA flag,
+# pipeline-stages.injectV2OverseerStages shape, checklist-stage helpers + noop branches,
+# and CHECKLISTS.md tickers)
+npm test
 ```
 
 The `web/` package has a simple `npm run dev` (static serve) if you want to iterate on assets against a running API.
@@ -235,7 +242,10 @@ The `web/` package has a simple `npm run dev` (static serve) if you want to iter
 | `BIGBOSS_PERSIST_CLI` | If `0` and `CURSOR_AGENT_SESSIONS` unset, same as `CURSOR_AGENT_SESSIONS=off` (legacy) | Optional |
 | `BIGBOSS_MODEL` | OpenAI model for planning (default `gpt-4o-mini`) | Optional |
 | `MERGE_MODEL` | Design merge model (defaults to `BIGBOSS_MODEL`) | Optional |
-| `LOVE_SMOKE_CHECKLIST` | If `1`, after a successful LÖVE **coding** stage, log a JSON smoke assessment (movement / persistence) from a read-only model pass | Optional |
+| `LOVE_SMOKE_CHECKLIST` | (v1 only — **deprecated for `ARTEFACT_SCHEMA=v2`**, where `CHECKLISTS.md` inherits the same bullets) If `1`, after a successful LÖVE **coding** stage, log a JSON smoke assessment (movement / persistence) from a read-only model pass | Optional |
+| `ARTEFACT_SCHEMA` | `v2` enables the spec-kit Tier 2 artefact tree (`spec.md`, `plan.md`, `CHECKLISTS.md`) and inserts the `clarify` / `analyze` / `checklist` Overseer sub-stages. Default `v1` keeps the legacy single-`DESIGN.md` flow byte-identical | Optional |
+| `CHECKLIST_BLOCKING` | If `1` and `ARTEFACT_SCHEMA=v2`, fail the pipeline when `CHECKLISTS.md` is still incomplete after the auto fix-up budget. Default advisory-only | Optional |
+| `CONSTITUTION_BOOTSTRAP` | If `1` and `.specify/memory/constitution.md` (or `CONSTITUTION.md`) is missing, bootstrap a draft from the user's task prompt at the start of the pipeline | Optional |
 
 ### `CURSOR_AGENT_MODEL` syntax
 

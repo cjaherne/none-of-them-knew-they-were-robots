@@ -51,6 +51,20 @@ export const GAME_ART_STAGE: StageDefinition = { name: "game-art", agent: "game-
 
 export const RELEASE_STAGE: StageDefinition = { name: "release", agent: "release", category: "release" };
 
+/**
+ * Spec-kit Tier 2 PR2/PR3 — discrete Overseer sub-stages. Inserted into the
+ * pipeline by `injectV2OverseerStages()` when `ARTEFACT_SCHEMA=v2`. Each is a
+ * single-stage group dispatched by category in the orchestrator. The agent
+ * field is `"bigboss"` because the underlying review is a BigBoss skill-pack
+ * call (same as the existing inline overseer blocks).
+ *
+ * `CHECKLIST_STAGE` is declared here for symmetry but is NOT inserted by the
+ * helper until PR3 — PR2 only wires `clarify` and `analyze`.
+ */
+export const CLARIFY_STAGE: StageDefinition = { name: "clarify", agent: "bigboss", category: "clarify" };
+export const ANALYZE_STAGE: StageDefinition = { name: "analyze", agent: "bigboss", category: "analyze" };
+export const CHECKLIST_STAGE: StageDefinition = { name: "checklist", agent: "bigboss", category: "checklist" };
+
 /** Maps BigBoss agent type string to StageDefinition (for full stages[].agents[] format) */
 export const AGENT_TYPE_TO_DEF: Record<string, StageDefinition> = {
   "ux-designer": { name: "ux-design", agent: "ux-designer", category: "design" },
@@ -213,5 +227,63 @@ export function injectPostDesignGameArt(stages: StageDefinition[]): StageDefinit
 
   const next = [...stages];
   next.splice(lastDesignIdx + 1, 0, { ...GAME_ART_STAGE });
+  return next;
+}
+
+/**
+ * Spec-kit Tier 2 PR2/PR3 — insert the named Overseer sub-stages into a stage list.
+ *
+ * - `CLARIFY_STAGE`   inserted immediately after the **last** design stage so
+ *                     it sees the merged `spec.md` / `plan.md` / `DESIGN.md` shim.
+ * - `ANALYZE_STAGE`   inserted immediately after the **last** coding stage so
+ *                     it sees the implementation diff and any `CODING_NOTES.md`.
+ * - `CHECKLIST_STAGE` (PR3) inserted immediately after `ANALYZE_STAGE` so it
+ *                     reads `CHECKLISTS.md` post-analyze and can hand off to a
+ *                     single coding fix-up before validation runs.
+ *
+ * Idempotent: existing CLARIFY/ANALYZE/CHECKLIST entries are left in place.
+ * Has no effect when the stage list contains no `design` or no `coding`
+ * entries respectively (so single-category pipelines like `code-only` mode
+ * are unaffected). CHECKLIST is only inserted when ANALYZE was also inserted
+ * (or already present) — there's no point in a checklist pass without the
+ * analyze stage that precedes it in the v2 lifecycle.
+ *
+ * Order of operations: insertions happen later-to-earlier so previously-
+ * computed indices stay valid: CHECKLIST first (after coding+1), then
+ * ANALYZE (after coding), then CLARIFY (after design — unchanged index
+ * because everything new is post-coding).
+ */
+export function injectV2OverseerStages(stages: StageDefinition[]): StageDefinition[] {
+  if (stages.length === 0) return stages;
+
+  let lastDesignIdx = -1;
+  let lastCodingIdx = -1;
+  let hasClarify = false;
+  let hasAnalyze = false;
+  let hasChecklist = false;
+  for (let i = 0; i < stages.length; i++) {
+    const cat = stages[i].category;
+    if (cat === "design") lastDesignIdx = i;
+    if (cat === "coding") lastCodingIdx = i;
+    if (cat === "clarify") hasClarify = true;
+    if (cat === "analyze") hasAnalyze = true;
+    if (cat === "checklist") hasChecklist = true;
+  }
+
+  const next = [...stages];
+  if (lastCodingIdx !== -1 && !hasChecklist) {
+    // Insert CHECKLIST_STAGE first (further from coding); ANALYZE_STAGE will
+    // be spliced between coding and checklist immediately afterwards.
+    next.splice(lastCodingIdx + 1, 0, { ...CHECKLIST_STAGE });
+  }
+  if (lastCodingIdx !== -1 && !hasAnalyze) {
+    next.splice(lastCodingIdx + 1, 0, { ...ANALYZE_STAGE });
+  }
+  if (lastDesignIdx !== -1 && !hasClarify) {
+    // ANALYZE + CHECKLIST were inserted after coding (later in the array);
+    // the design index is unchanged, so we can splice CLARIFY at
+    // lastDesignIdx + 1 without recomputing.
+    next.splice(lastDesignIdx + 1, 0, { ...CLARIFY_STAGE });
+  }
   return next;
 }

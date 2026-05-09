@@ -8,6 +8,8 @@ import { loadSkillPack, SkillPack } from "./skill-loader";
 import { loadBigBossSystemPromptSync } from "./bigboss-prompt-loader";
 import { OVERSEER_LOVE_CODE_CHECKLIST, OVERSEER_LOVE_DESIGN_CHECKLIST } from "./overseer-love-checklists";
 import { getCursorAgentSessionsMode } from "./cursor-session-policy";
+import { formatConstitutionForPrompt } from "./constitution-artifact";
+import { isArtefactSchemaV2 } from "./artefact-schema";
 
 const log = createLogger("agent-runner");
 
@@ -840,6 +842,13 @@ function buildFullPrompt(
       config.category === "design-review" ? OVERSEER_LOVE_DESIGN_CHECKLIST : OVERSEER_LOVE_CODE_CHECKLIST
     }`;
   }
+  // Project-wide constitution (spec-kit-style) — loaded last so it sits at the very
+  // top of the prompt, above the BigBoss persona and role-specific preamble. Empty
+  // when no <workDir>/.specify/memory/constitution.md or <workDir>/CONSTITUTION.md.
+  const constitutionBlock = formatConstitutionForPrompt(workDir);
+  if (constitutionBlock) {
+    preamble = `${constitutionBlock}${preamble}`;
+  }
   parts.push(preamble);
   if (config.parallelDesign && config.category === "design") {
     parts.push(`\nYour agent type is: ${config.agentType}`);
@@ -896,7 +905,56 @@ function buildFullPrompt(
   const useDiskBasedContext =
     config.category === "coding" || config.category === "validation" || config.category === "game-art";
 
-  if (brief.designDoc) {
+  // v2 (ARTEFACT_SCHEMA=v2): prefer spec.md + plan.md previews over DESIGN.md.
+  // Falls through to the legacy DESIGN.md block when v2 is off, when neither
+  // spec.md nor plan.md exist on disk yet (PR1 transition), or when this is a
+  // design-stage agent (designers still produce per-agent design.md files).
+  let v2Surfaced = false;
+  if (
+    isArtefactSchemaV2() &&
+    config.category !== "design"
+  ) {
+    let specBody = "";
+    let planBody = "";
+    try { specBody = readFileSync(path.join(workDir, "spec.md"), "utf-8"); } catch { /* missing */ }
+    try { planBody = readFileSync(path.join(workDir, "plan.md"), "utf-8"); } catch { /* missing */ }
+    if (specBody.trim() || planBody.trim()) {
+      v2Surfaced = true;
+      const cap = useDiskBasedContext ? 3000 : 16000;
+      if (specBody.trim()) {
+        const preview = specBody.slice(0, cap);
+        const truncated = specBody.length > cap;
+        parts.push(useDiskBasedContext ? "## spec.md (preview)" : "## spec.md");
+        parts.push(
+          useDiskBasedContext
+            ? "PREVIEW of the specification (what + why). Read the full spec.md from disk for the complete document."
+            : "Specification for this task (what is being built and why):",
+        );
+        parts.push("```markdown");
+        parts.push(preview);
+        if (truncated) parts.push("\n... (truncated — read full spec.md from disk using your filesystem tool)");
+        parts.push("```");
+        parts.push("");
+      }
+      if (planBody.trim()) {
+        const preview = planBody.slice(0, cap);
+        const truncated = planBody.length > cap;
+        parts.push(useDiskBasedContext ? "## plan.md (preview)" : "## plan.md");
+        parts.push(
+          useDiskBasedContext
+            ? "PREVIEW of the implementation plan (how). Read the full plan.md from disk for architecture, integration boundaries, and strategy."
+            : "Implementation plan for this task (architecture and how to build it):",
+        );
+        parts.push("```markdown");
+        parts.push(preview);
+        if (truncated) parts.push("\n... (truncated — read full plan.md from disk using your filesystem tool)");
+        parts.push("```");
+        parts.push("");
+      }
+    }
+  }
+
+  if (brief.designDoc && !v2Surfaced) {
     if (useDiskBasedContext) {
       const preview = brief.designDoc.slice(0, 3000);
       const truncated = brief.designDoc.length > 3000;
@@ -935,6 +993,26 @@ function buildFullPrompt(
       }
     } catch {
       /* no REQUIREMENTS.md */
+    }
+  }
+
+  if (config.category === "coding") {
+    try {
+      const tasksPath = path.join(workDir, "TASKS.md");
+      const tasks = readFileSync(tasksPath, "utf-8");
+      if (tasks.trim()) {
+        parts.push("## TASKS.md (preview)");
+        parts.push(
+          "Executable task list derived from BigBoss's plan + DESIGN.md. Read the full TASKS.md from disk and follow the dependency order; tasks marked `[P]` may be implemented in any order within their phase.",
+        );
+        parts.push("```markdown");
+        const cap = 4000;
+        parts.push(tasks.length > cap ? `${tasks.slice(0, cap)}\n\n... (truncated — read full file from disk)` : tasks);
+        parts.push("```");
+        parts.push("");
+      }
+    } catch {
+      /* no TASKS.md (Tier 1 may be disabled or this is the first run before merge) */
     }
   }
 

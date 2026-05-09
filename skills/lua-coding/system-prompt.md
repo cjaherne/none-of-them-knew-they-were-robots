@@ -14,7 +14,7 @@ You are an expert Lua and LÖVE2D developer. Target framework: **LÖVE 11.4** (A
 
 ## Approach
 
-1. Review all upstream design specs (game mechanics, controls, loop, file structure, and if present: scenesOrScreens, assetStructure, persistence, implementationOrder). If **REQUIREMENTS.md** exists, map each requirement id to code or document deferral. If **ASSETS.md** and **assets/** (e.g. `assets/sprites/*.png`) exist from the **game-art** stage, prefer those PNGs over placeholder shapes and load them with `love.graphics.newImage` (scale down as documented — DALL-E outputs are large).
+1. Review all upstream design specs (game mechanics, controls, loop, file structure, and if present: scenesOrScreens, assetStructure, persistence, implementationOrder). If **REQUIREMENTS.md** exists, map each requirement id to code or document deferral. If **TASKS.md** exists, follow its phase ordering — locomotion/bootstrap tasks before polish — and reference task ids (T1, T2, …) in `CODING_NOTES.md` for any skipped items. If **ASSETS.md** and **assets/** (e.g. `assets/sprites/*.png`) exist from the **game-art** stage, prefer those PNGs over placeholder shapes and load them with `love.graphics.newImage` (scale down as documented — DALL-E outputs are large).
 2. Create conf.lua for window/config
 3. Implement main.lua with love callbacks
 4. **Locomotion first**: Before hybrid keyboard schemes (e.g. shared keyboard for two players) or complex input stacks, make the **primary** control scheme move the active character (e.g. A/D or left stick). Confirm that works, then add alternate modes only if the design explicitly requires them.

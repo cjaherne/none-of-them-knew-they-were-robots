@@ -20,6 +20,31 @@ export interface StageStatus {
   feedbackLimitReached?: boolean;
   /** Content of unaddressed feedback when feedbackLimitReached is true */
   unaddressedFeedback?: string;
+  /**
+   * Spec-kit Tier 2 PR2 — display-friendly summaries of the named Overseer
+   * sub-stages. UI uses these to render per-stage status chips + drill-down.
+   * The full overseer JSON is also emitted via overseer log events; these are
+   * just the bits the UI needs without parsing the log stream.
+   */
+  clarifyResult?: {
+    fit: "ok" | "gaps";
+    gapCount: number;
+    iteration: number;
+    clarificationsAppended: number;
+  };
+  analyzeResult?: {
+    fit: "ok" | "drift";
+    issueCount: number;
+    iterationsUsed: number;
+    fixUpsRun: number;
+    capReached: boolean;
+  };
+  /** Reserved for Tier 2 PR3 (`checklist` stage). */
+  checklistResult?: {
+    fit: "ok" | "incomplete";
+    passedCount: number;
+    failedCount: number;
+  };
 }
 
 export type PipelineMode = "auto" | "full" | "code-test" | "code-only";
@@ -217,7 +242,11 @@ class TaskStore {
   emit_overseer_log(
     taskId: string,
     message: string,
-    meta: { phase: "design-review" | "code-review"; status: "running" | "done"; result?: "ok" | "gaps" | "drift" },
+    meta: {
+      phase: "design-review" | "code-review" | "clarify" | "analyze" | "checklist";
+      status: "running" | "done";
+      result?: "ok" | "gaps" | "drift" | "incomplete";
+    },
   ): void {
     const task = this.tasks.get(taskId);
     this.emit(taskId, {

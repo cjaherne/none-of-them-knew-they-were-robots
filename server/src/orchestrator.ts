@@ -34,6 +34,20 @@ import {
   ensureDesignReferencesRequirements,
   runLoveSmokeChecklistOpenAI,
 } from "./requirements-artifact";
+import { bootstrapConstitutionFromTask } from "./constitution-artifact";
+import { writeTasksMd } from "./tasks-artifact";
+import { isArtefactSchemaV2 } from "./artefact-schema";
+import { mergeSpecContributions } from "./spec-artifact";
+import {
+  mergePlanContributions,
+  mergeResearchContributions,
+  mergeDataModelContributions,
+  collectContracts,
+} from "./plan-artifact";
+import { writeChecklistsMd } from "./checklists-artifact";
+import { runClarifyStage } from "./clarify-stage";
+import { runAnalyzeStage } from "./analyze-stage";
+import { runChecklistStage } from "./checklist-stage";
 import {
   FULL_STAGES,
   RELEASE_STAGE,
@@ -42,6 +56,7 @@ import {
   resolveSkillsRoot,
   inferStackFromAgents,
   injectPostDesignGameArt,
+  injectV2OverseerStages,
   type StageDefinition,
   type PipelineStack,
 } from "./pipeline-stages";
@@ -222,6 +237,59 @@ async function readDesignPreview(workDir: string): Promise<string> {
     return content.slice(0, 8000);
   } catch {
     return "";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Spec-kit Tier 2 PR1 — v2 artefact writers (gated by ARTEFACT_SCHEMA=v2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Run the v2 artefact writers (spec.md, plan.md, optional research.md /
+ * data-model.md / contracts/, plus CHECKLISTS.md) in addition to today's
+ * DESIGN.md. No-op when ARTEFACT_SCHEMA is unset or "v1".
+ *
+ * PR1 transition: when designers haven't been updated to write per-artefact
+ * `.pipeline/<agent>-{spec,plan}.md` files yet, mergeSpecContributions /
+ * mergePlanContributions fall back to deriving the body from the merged
+ * DESIGN.md so the v2 artefacts still appear in the workspace. DESIGN.md is
+ * NOT overwritten in PR1 — the compat shim (writeDesignCompatShim) is reserved
+ * for a follow-up PR once at least one designer is producing per-artefact
+ * outputs.
+ */
+async function runV2ArtefactWriters(
+  taskId: string,
+  workDir: string,
+  agents: string[],
+  originalTask: string,
+  stack: PipelineStack,
+): Promise<void> {
+  if (!isArtefactSchemaV2()) return;
+  const log = createLogger("artefact-v2");
+  try {
+    const specResult = await mergeSpecContributions(workDir, agents, originalTask);
+    if (specResult.merged) {
+      taskStore.emit_log(taskId, `Wrote spec.md (sources: ${specResult.sources.join(", ")}).`);
+    }
+    const planResult = await mergePlanContributions(workDir, agents);
+    if (planResult.merged) {
+      taskStore.emit_log(taskId, `Wrote plan.md (sources: ${planResult.sources.join(", ")}).`);
+    }
+    const researchWritten = await mergeResearchContributions(workDir, agents);
+    if (researchWritten) taskStore.emit_log(taskId, "Wrote research.md.");
+    const dataModelWritten = await mergeDataModelContributions(workDir, agents);
+    if (dataModelWritten) taskStore.emit_log(taskId, "Wrote data-model.md.");
+    const contractsCopied = await collectContracts(workDir, agents);
+    if (contractsCopied > 0) {
+      taskStore.emit_log(taskId, `Collected ${contractsCopied} contract file(s) into contracts/.`);
+    }
+    const checklists = await writeChecklistsMd({ workDir, stack, originalTask });
+    taskStore.emit_log(
+      taskId,
+      `Wrote CHECKLISTS.md (${checklists.itemCount} items, ${checklists.usedOpenAI ? "openai" : "fallback"}).`,
+    );
+  } catch (err) {
+    log.warn("v2 artefact writers failed (non-fatal)", { err: String(err) });
   }
 }
 
@@ -542,6 +610,18 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
     return;
   }
 
+  // Spec-kit-style per-project constitution. No-op when the file already exists or
+  // when CONSTITUTION_BOOTSTRAP is not set. The loaded text is injected into every
+  // agent prompt by agent-runner.buildFullPrompt() via formatConstitutionForPrompt().
+  try {
+    const bootstrap = await bootstrapConstitutionFromTask(workDir, task.prompt);
+    if (bootstrap.written && bootstrap.pathRelative) {
+      taskStore.emit_log(task.id, `Bootstrapped project constitution at ${bootstrap.pathRelative}.`);
+    }
+  } catch (err) {
+    log.warn("Constitution bootstrap failed (non-fatal)", { err: String(err) });
+  }
+
   let cacheBrief = "";
   try {
     const brief = buildContextBrief("planning", workDir);
@@ -630,6 +710,16 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
     log.info("Pipeline includes post-design game-art stage (LÖVE + OPENAI_API_KEY)", undefined, "flow");
   }
 
+  // Spec-kit Tier 2 PR2 — promote the inline overseer reviews into discrete
+  // `clarify` (post-design) and `analyze` (post-coding) stages when v2.
+  // Idempotent and no-op for v1; CHECKLIST_STAGE waits for PR3.
+  if (isArtefactSchemaV2()) {
+    stages = injectV2OverseerStages(stages);
+    if (stages.some((s) => s.category === "clarify" || s.category === "analyze")) {
+      log.info("Pipeline includes spec-kit v2 overseer stages (clarify/analyze)", undefined, "flow");
+    }
+  }
+
   stages = [...stages, RELEASE_STAGE];
 
   const pipelineStack: PipelineStack = inferStackFromAgents(stages.map((s) => s.agent));
@@ -654,7 +744,10 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
   let designFeedbackByAgent: Record<string, string> | undefined;
   let designReviewIterations = 0;
   let codeReviewIterations = 0;
+  let checklistFixUps = 0;
   let loveTestFixIterations = 0;
+  /** Single-shot guard so the LOVE_SMOKE_CHECKLIST deprecation note is logged once per pipeline. */
+  let loveSmokeDeprecationWarned = false;
   /** After Overseer design gaps: if non-null, next parallel design pass re-runs only these agent ids (subset of group). */
   let pendingPartialDesignRerun: string[] | null = null;
   let feedbackFingerprint: string | undefined;
@@ -803,6 +896,34 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
         taskStore.emit_log(task.id, `Merged ${group.stageDefs.length} design documents`);
         await ensureDesignReferencesRequirements(workDir);
 
+        await runV2ArtefactWriters(
+          task.id,
+          workDir,
+          group.stageDefs.map((s) => s.agent),
+          task.prompt,
+          pipelineStack,
+        );
+
+        try {
+          const tasksResult = await writeTasksMd({
+            workDir,
+            originalTask: task.prompt,
+            stages,
+            stack: pipelineStack,
+          });
+          taskStore.emit_log(task.id, `Wrote TASKS.md (${tasksResult.taskCount} tasks).`);
+        } catch (err) {
+          log.warn("TASKS.md generation failed (non-fatal)", { err: String(err) });
+        }
+
+        // v2 splits this into a separate `clarify` stage (inserted by
+        // injectV2OverseerStages); skip the inline review when v2 is on so the
+        // overseer call only fires once per pipeline.
+        if (isArtefactSchemaV2()) {
+          // v2: design approval happens after the clarify stage so the user sees the
+          // overseer's findings; nothing more to do here. Note the existing approval
+          // block below is also gated on v1.
+        } else {
         taskStore.emit_overseer_log(task.id, "BigBoss (Overseer): design review — comparing merged design to requirements…", {
           phase: "design-review",
           status: "running",
@@ -898,6 +1019,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
             continue;
           }
         }
+        } // end of v1 inline overseer + approval block (gated by !isArtefactSchemaV2())
       }
     } else {
       const stage = group.stageDefs[0];
@@ -919,6 +1041,280 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
           errors: [],
           durationMs: 0,
         });
+        groupIndex++;
+        continue;
+      }
+
+      // Spec-kit Tier 2 PR2 — `clarify` stage dispatch (v2 only). Replaces the
+      // inline overseer-design-review block from the v1 design-merge branch.
+      if (stage.category === "clarify") {
+        const stageStart = new Date().toISOString();
+        taskStore.updateStage(task.id, stage.name, { status: "running", startedAt: stageStart });
+
+        const clarifyOutcome = await runClarifyStage({
+          workDir,
+          originalTask: task.prompt,
+          skillsRoot,
+          taskId: task.id,
+          cursorSessionId: await sessionRegistry.getOrCreate("bigboss"),
+          signal,
+          stack: pipelineStack,
+        });
+
+        if (signal.aborted) { taskStore.cleanupAbort(task.id); return; }
+
+        const clarifySummary = {
+          fit: (clarifyOutcome.result?.fit ?? "ok") as "ok" | "gaps",
+          gapCount: clarifyOutcome.result?.gaps?.length ?? 0,
+          iteration: designReviewIterations,
+          clarificationsAppended: clarifyOutcome.clarificationsAppended,
+        };
+        taskStore.updateStage(task.id, stage.name, {
+          status: "succeeded",
+          completedAt: new Date().toISOString(),
+          notes: `Overseer clarify: ${clarifySummary.fit}${clarifySummary.gapCount ? ` (${clarifySummary.gapCount} gaps)` : ""}`,
+          clarifyResult: clarifySummary,
+        });
+
+        if (clarifyOutcome.status === "gaps" && designReviewIterations < MAX_OVERSEER_DESIGN_ITERATIONS) {
+          designReviewIterations++;
+          designFeedbackByAgent = undefined;
+          let cleanedGapsByAgent: Record<string, string> | undefined;
+          const rawByAgent = clarifyOutcome.result?.gapsByAgent;
+          if (rawByAgent && typeof rawByAgent === "object") {
+            const cleaned: Record<string, string> = {};
+            for (const [k, v] of Object.entries(rawByAgent)) {
+              if (typeof v === "string" && v.trim()) cleaned[k] = v.trim();
+            }
+            if (Object.keys(cleaned).length > 0) {
+              designFeedbackByAgent = cleaned;
+              cleanedGapsByAgent = cleaned;
+            }
+          }
+          designFeedback = clarifyOutcome.result?.suggestedSubTask?.prompt
+            ? `Overseer found design gaps; address these in your design:\n${clarifyOutcome.result.suggestedSubTask.prompt}`
+            : `Overseer found design gaps: ${(clarifyOutcome.result?.gaps || []).join("; ")}`;
+
+          // Find the most recent design group and rewind to it. The design group
+          // may be parallel (multiple stageDefs) or single — handle both.
+          const designGroupIdx = stageGroups.findIndex(
+            (g, i) => i < groupIndex && g.stageDefs.some((s) => s.category === "design"),
+          );
+          if (designGroupIdx >= 0) {
+            const designGroup = stageGroups[designGroupIdx];
+            const designAgents = designGroup.stageDefs.map((s) => s.agent);
+            const partialAgents = computePartialDesignRerunAgents(designGroup.stageDefs, cleanedGapsByAgent);
+            const agentsToSplice = new Set(
+              partialAgents && partialAgents.length > 0 ? partialAgents : designAgents,
+            );
+            spliceParallelUpstreamForRerun(upstreamResults, designGroup.stageDefs, agentsToSplice);
+            for (const s of designGroup.stageDefs) {
+              if (agentsToSplice.has(s.agent)) {
+                taskStore.updateStage(task.id, s.name, { status: "pending" as const });
+              }
+            }
+            // Mark the just-completed clarify stage pending again so it re-runs after re-merge.
+            taskStore.updateStage(task.id, stage.name, { status: "pending" as const });
+
+            const gapList = (clarifyOutcome.result?.gaps || []).slice(0, 5).join("; ");
+            const gapDetail = gapList ? ` Gaps: ${gapList}${(clarifyOutcome.result?.gaps?.length ?? 0) > 5 ? "…" : ""}` : "";
+            const rerunLabel =
+              partialAgents && partialAgents.length < designGroup.stageDefs.length
+                ? `Re-running designers: ${partialAgents.join(", ")}`
+                : "Re-running design group";
+            taskStore.emit_log(
+              task.id,
+              `Overseer clarify: design gaps (iteration ${designReviewIterations}). ${rerunLabel}.${gapDetail}`,
+            );
+            log.info("Clarify gaps: rewinding to design group", { gaps: clarifyOutcome.result?.gaps, partialAgents }, "flow");
+            groupIndex = designGroupIdx;
+            continue;
+          }
+        }
+
+        // Design approval gate — moved here from the design group when v2 is on, so the
+        // user sees the spec/plan AFTER the overseer has reviewed and appended any
+        // clarifications. Mirrors the v1 inline approval block.
+        if (task.requireDesignApproval) {
+          const summary = await bigBossSummarize(workDir, "DESIGN.md", "design", skillsRoot);
+          const designPreview = await readDesignPreview(workDir);
+          log.info("Design approval requested (post-clarify, v2)", undefined, "flow");
+
+          const approval: ApprovalResponse = await taskStore.requestApproval(
+            task.id, summary, { approvalType: "design", designPreview },
+          );
+
+          if (signal.aborted) { taskStore.cleanupAbort(task.id); return; }
+
+          if (approval.action === "reject") {
+            taskStore.updateTaskStatus(task.id, TaskStatus.Failed, "Design rejected by user");
+            taskStore.cleanupAbort(task.id);
+            return;
+          }
+
+          if (approval.action === "revise" && designLoops < MAX_DESIGN_LOOPS) {
+            designLoops++;
+            designFeedbackByAgent = undefined;
+            designFeedback = approval.feedback || "User requested design changes.";
+            taskStore.emit_log(task.id, `Design revision ${designLoops}: ${designFeedback}`);
+            const designGroupIdx = stageGroups.findIndex(
+              (g, i) => i < groupIndex && g.stageDefs.some((s) => s.category === "design"),
+            );
+            if (designGroupIdx >= 0) {
+              for (const s of stageGroups[designGroupIdx].stageDefs) {
+                taskStore.updateStage(task.id, s.name, { status: "pending" as const });
+              }
+              taskStore.updateStage(task.id, stage.name, { status: "pending" as const });
+              groupIndex = designGroupIdx;
+              continue;
+            }
+          }
+        }
+
+        groupIndex++;
+        continue;
+      }
+
+      // Spec-kit Tier 2 PR2 — `analyze` stage dispatch (v2 only). Replaces the
+      // inline overseer-post-code-review + drift fix-up block from the v1
+      // coding stage. The fix-up runner uses the most recent coding agent's
+      // type (derived from the pipeline stack) and shares the existing
+      // sessionRegistry / baseConfig.
+      if (stage.category === "analyze") {
+        const stageStart = new Date().toISOString();
+        taskStore.updateStage(task.id, stage.name, { status: "running", startedAt: stageStart });
+
+        const codingAgentType = pipelineStack === "love" ? "lua-coding" : "coding";
+        const analyzeOutcome = await runAnalyzeStage({
+          workDir,
+          originalTask: task.prompt,
+          skillsRoot,
+          taskId: task.id,
+          cursorSessionId: await sessionRegistry.getOrCreate("bigboss"),
+          signal,
+          stack: pipelineStack,
+          initialIteration: codeReviewIterations,
+          fixUpRunner: async (focusedPrompt) => {
+            const fixUpSessionId = await sessionRegistry.getOrCreate(codingAgentType);
+            const fixUpConfig: AgentRunConfig = {
+              ...baseConfig,
+              prompt: focusedPrompt,
+              agentType: codingAgentType,
+              category: "coding",
+              workspaceReady: true,
+              trivial: isTrivial,
+              complexity,
+              upstreamResults: [...upstreamResults],
+              agentBrief: agentBriefs[codingAgentType] ?? null,
+              cursorSessionId: fixUpSessionId,
+            };
+            return runAgent(fixUpConfig, workDir, undefined, signal);
+          },
+        });
+
+        if (signal.aborted) { taskStore.cleanupAbort(task.id); return; }
+
+        codeReviewIterations = analyzeOutcome.iterationsUsed;
+        for (const r of analyzeOutcome.fixUpResults) upstreamResults.push(r);
+
+        taskStore.updateStage(task.id, stage.name, {
+          status: "succeeded",
+          completedAt: new Date().toISOString(),
+          notes:
+            `Overseer analyze: ${analyzeOutcome.status}` +
+            (analyzeOutcome.fixUpResults.length > 0
+              ? ` (${analyzeOutcome.fixUpResults.length} fix-up${analyzeOutcome.fixUpResults.length > 1 ? "s" : ""})`
+              : ""),
+          analyzeResult: {
+            fit: (analyzeOutcome.result?.fit ?? "ok") as "ok" | "drift",
+            issueCount: analyzeOutcome.result?.missingOrWrong?.length ?? 0,
+            iterationsUsed: analyzeOutcome.iterationsUsed,
+            fixUpsRun: analyzeOutcome.fixUpResults.length,
+            capReached: analyzeOutcome.capReached,
+          },
+        });
+
+        groupIndex++;
+        continue;
+      }
+
+      // Spec-kit Tier 2 PR3 — `checklist` stage dispatch (v2 only). Replaces
+      // the legacy LOVE_SMOKE_CHECKLIST=1 env path with a stack-agnostic
+      // read-only review of CHECKLISTS.md (PR1 artefact). On `incomplete`,
+      // hands off to a single coding fix-up (cap MAX_CHECKLIST_FIX_ITERATIONS
+      // = 1). When CHECKLIST_BLOCKING=1 is set and the final state is
+      // `incomplete`, the pipeline is failed; otherwise advisory-only
+      // (matches plan §12 Q4).
+      if (stage.category === "checklist") {
+        const stageStart = new Date().toISOString();
+        taskStore.updateStage(task.id, stage.name, { status: "running", startedAt: stageStart });
+
+        const codingAgentType = pipelineStack === "love" ? "lua-coding" : "coding";
+        const checklistOutcome = await runChecklistStage({
+          workDir,
+          originalTask: task.prompt,
+          taskId: task.id,
+          signal,
+          stack: pipelineStack,
+          initialFixUps: checklistFixUps,
+          fixUpRunner: async (focusedPrompt) => {
+            const fixUpSessionId = await sessionRegistry.getOrCreate(codingAgentType);
+            const fixUpConfig: AgentRunConfig = {
+              ...baseConfig,
+              prompt: focusedPrompt,
+              agentType: codingAgentType,
+              category: "coding",
+              workspaceReady: true,
+              trivial: isTrivial,
+              complexity,
+              upstreamResults: [...upstreamResults],
+              agentBrief: agentBriefs[codingAgentType] ?? null,
+              cursorSessionId: fixUpSessionId,
+            };
+            return runAgent(fixUpConfig, workDir, undefined, signal);
+          },
+        });
+
+        if (signal.aborted) { taskStore.cleanupAbort(task.id); return; }
+
+        checklistFixUps = checklistOutcome.fixUpsRun;
+        for (const r of checklistOutcome.fixUpResults) upstreamResults.push(r);
+
+        const passedCount = checklistOutcome.result?.items.filter((i) => i.status === "pass").length ?? 0;
+        const failedCount = checklistOutcome.result?.failed.length ?? 0;
+        taskStore.updateStage(task.id, stage.name, {
+          status: "succeeded",
+          completedAt: new Date().toISOString(),
+          notes:
+            `Overseer checklist: ${checklistOutcome.status}` +
+            (failedCount > 0 ? ` (${failedCount} failed)` : "") +
+            (checklistOutcome.fixUpResults.length > 0
+              ? ` (${checklistOutcome.fixUpResults.length} fix-up)`
+              : ""),
+          checklistResult:
+            checklistOutcome.result
+              ? {
+                  fit: checklistOutcome.result.fit,
+                  passedCount,
+                  failedCount,
+                }
+              : undefined,
+        });
+
+        if (checklistOutcome.shouldBlock) {
+          taskStore.emit_log(
+            task.id,
+            `CHECKLIST_BLOCKING=1: ${failedCount} item(s) still failing after fix-up; failing pipeline.`,
+          );
+          taskStore.updateTaskStatus(
+            task.id,
+            TaskStatus.Failed,
+            `Checklist blocking: ${failedCount} item(s) failed`,
+          );
+          taskStore.cleanupAbort(task.id);
+          return;
+        }
+
         groupIndex++;
         continue;
       }
@@ -1059,6 +1455,26 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
               /* DESIGN.md may not exist yet */
             }
             await ensureDesignReferencesRequirements(workDir);
+
+            await runV2ArtefactWriters(
+              task.id,
+              workDir,
+              [stage.agent],
+              task.prompt,
+              pipelineStack,
+            );
+
+            try {
+              const tasksResult = await writeTasksMd({
+                workDir,
+                originalTask: task.prompt,
+                stages,
+                stack: pipelineStack,
+              });
+              taskStore.emit_log(task.id, `Wrote TASKS.md (${tasksResult.taskCount} tasks).`);
+            } catch (err) {
+              log.warn("TASKS.md generation failed (non-fatal)", { err: String(err) });
+            }
           }
 
           if (stage.category === "design" && task.requireDesignApproval) {
@@ -1162,7 +1578,10 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
             }
           }
 
-          if (stage.category === "coding" && result.success && codeReviewIterations < MAX_OVERSEER_CODE_ITERATIONS) {
+          // v2 splits this block into a discrete `analyze` stage (inserted by
+          // injectV2OverseerStages); skip the inline review when v2 is on so the
+          // overseer call only fires once per pipeline.
+          if (!isArtefactSchemaV2() && stage.category === "coding" && result.success && codeReviewIterations < MAX_OVERSEER_CODE_ITERATIONS) {
             taskStore.emit_overseer_log(task.id, "BigBoss (Overseer): reviewing code against design and requirements…", {
               phase: "code-review",
               status: "running",
@@ -1272,22 +1691,42 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
             }
           }
 
+          // Spec-kit Tier 2 PR3 — LOVE_SMOKE_CHECKLIST is deprecated. v2 runs
+          // the stack-agnostic `checklist` stage automatically (which inherits
+          // OVERSEER_LOVE_CODE_CHECKLIST bullets for LÖVE). The legacy env
+          // path remains here for v1 compat only; emits a deprecation warning
+          // when set so users have time to migrate.
           if (
             stage.category === "coding" &&
             result.success &&
             pipelineStack === "love" &&
             process.env.LOVE_SMOKE_CHECKLIST === "1"
           ) {
-            const smoke = await runLoveSmokeChecklistOpenAI(workDir, task.prompt);
-            if (smoke) {
-              taskStore.emit_log(
-                task.id,
-                `LÖVE smoke checklist: ${JSON.stringify({
-                  movementOk: smoke.movementOk,
-                  persistenceOk: smoke.persistenceOk,
-                  issues: smoke.issues,
-                })}`,
-              );
+            if (isArtefactSchemaV2()) {
+              if (!loveSmokeDeprecationWarned) {
+                loveSmokeDeprecationWarned = true;
+                log.warn(
+                  "LOVE_SMOKE_CHECKLIST is deprecated; CHECKLISTS.md is generated automatically when ARTEFACT_SCHEMA=v2. Skipping legacy LÖVE smoke pass.",
+                  undefined,
+                  "flow",
+                );
+                taskStore.emit_log(
+                  task.id,
+                  "LOVE_SMOKE_CHECKLIST is deprecated; the v2 `checklist` stage covers this and more. Unset the env var to silence this warning.",
+                );
+              }
+            } else {
+              const smoke = await runLoveSmokeChecklistOpenAI(workDir, task.prompt);
+              if (smoke) {
+                taskStore.emit_log(
+                  task.id,
+                  `LÖVE smoke checklist: ${JSON.stringify({
+                    movementOk: smoke.movementOk,
+                    persistenceOk: smoke.persistenceOk,
+                    issues: smoke.issues,
+                  })}`,
+                );
+              }
             }
           }
 
