@@ -34,6 +34,8 @@ import {
   ensureDesignReferencesRequirements,
   runLoveSmokeChecklistOpenAI,
 } from "./requirements-artifact";
+import { bootstrapConstitutionFromTask } from "./constitution-artifact";
+import { writeTasksMd } from "./tasks-artifact";
 import {
   FULL_STAGES,
   RELEASE_STAGE,
@@ -542,6 +544,18 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
     return;
   }
 
+  // Spec-kit-style per-project constitution. No-op when the file already exists or
+  // when CONSTITUTION_BOOTSTRAP is not set. The loaded text is injected into every
+  // agent prompt by agent-runner.buildFullPrompt() via formatConstitutionForPrompt().
+  try {
+    const bootstrap = await bootstrapConstitutionFromTask(workDir, task.prompt);
+    if (bootstrap.written && bootstrap.pathRelative) {
+      taskStore.emit_log(task.id, `Bootstrapped project constitution at ${bootstrap.pathRelative}.`);
+    }
+  } catch (err) {
+    log.warn("Constitution bootstrap failed (non-fatal)", { err: String(err) });
+  }
+
   let cacheBrief = "";
   try {
     const brief = buildContextBrief("planning", workDir);
@@ -803,6 +817,18 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
         taskStore.emit_log(task.id, `Merged ${group.stageDefs.length} design documents`);
         await ensureDesignReferencesRequirements(workDir);
 
+        try {
+          const tasksResult = await writeTasksMd({
+            workDir,
+            originalTask: task.prompt,
+            stages,
+            stack: pipelineStack,
+          });
+          taskStore.emit_log(task.id, `Wrote TASKS.md (${tasksResult.taskCount} tasks).`);
+        } catch (err) {
+          log.warn("TASKS.md generation failed (non-fatal)", { err: String(err) });
+        }
+
         taskStore.emit_overseer_log(task.id, "BigBoss (Overseer): design review — comparing merged design to requirements…", {
           phase: "design-review",
           status: "running",
@@ -1059,6 +1085,18 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
               /* DESIGN.md may not exist yet */
             }
             await ensureDesignReferencesRequirements(workDir);
+
+            try {
+              const tasksResult = await writeTasksMd({
+                workDir,
+                originalTask: task.prompt,
+                stages,
+                stack: pipelineStack,
+              });
+              taskStore.emit_log(task.id, `Wrote TASKS.md (${tasksResult.taskCount} tasks).`);
+            } catch (err) {
+              log.warn("TASKS.md generation failed (non-fatal)", { err: String(err) });
+            }
           }
 
           if (stage.category === "design" && task.requireDesignApproval) {

@@ -8,6 +8,7 @@ import { loadSkillPack, SkillPack } from "./skill-loader";
 import { loadBigBossSystemPromptSync } from "./bigboss-prompt-loader";
 import { OVERSEER_LOVE_CODE_CHECKLIST, OVERSEER_LOVE_DESIGN_CHECKLIST } from "./overseer-love-checklists";
 import { getCursorAgentSessionsMode } from "./cursor-session-policy";
+import { formatConstitutionForPrompt } from "./constitution-artifact";
 
 const log = createLogger("agent-runner");
 
@@ -840,6 +841,13 @@ function buildFullPrompt(
       config.category === "design-review" ? OVERSEER_LOVE_DESIGN_CHECKLIST : OVERSEER_LOVE_CODE_CHECKLIST
     }`;
   }
+  // Project-wide constitution (spec-kit-style) — loaded last so it sits at the very
+  // top of the prompt, above the BigBoss persona and role-specific preamble. Empty
+  // when no <workDir>/.specify/memory/constitution.md or <workDir>/CONSTITUTION.md.
+  const constitutionBlock = formatConstitutionForPrompt(workDir);
+  if (constitutionBlock) {
+    preamble = `${constitutionBlock}${preamble}`;
+  }
   parts.push(preamble);
   if (config.parallelDesign && config.category === "design") {
     parts.push(`\nYour agent type is: ${config.agentType}`);
@@ -935,6 +943,26 @@ function buildFullPrompt(
       }
     } catch {
       /* no REQUIREMENTS.md */
+    }
+  }
+
+  if (config.category === "coding") {
+    try {
+      const tasksPath = path.join(workDir, "TASKS.md");
+      const tasks = readFileSync(tasksPath, "utf-8");
+      if (tasks.trim()) {
+        parts.push("## TASKS.md (preview)");
+        parts.push(
+          "Executable task list derived from BigBoss's plan + DESIGN.md. Read the full TASKS.md from disk and follow the dependency order; tasks marked `[P]` may be implemented in any order within their phase.",
+        );
+        parts.push("```markdown");
+        const cap = 4000;
+        parts.push(tasks.length > cap ? `${tasks.slice(0, cap)}\n\n... (truncated — read full file from disk)` : tasks);
+        parts.push("```");
+        parts.push("");
+      }
+    } catch {
+      /* no TASKS.md (Tier 1 may be disabled or this is the first run before merge) */
     }
   }
 
