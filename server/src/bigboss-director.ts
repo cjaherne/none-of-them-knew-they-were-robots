@@ -108,6 +108,8 @@ export const MAX_OVERSEER_DESIGN_ITERATIONS = 2;
 export const MAX_OVERSEER_CODE_ITERATIONS = 2;
 /** After love-testing fails, re-run lua-coding with output, then retry validation (cap). */
 export const MAX_LOVE_TEST_FIX_ITERATIONS = 2;
+/** Spec-kit Tier 2 PR3: cap for the checklist stage's optional follow-up coding pass. */
+export const MAX_CHECKLIST_FIX_ITERATIONS = 1;
 
 export interface OverseerDesignReviewResult {
   fit: "ok" | "gaps";
@@ -115,6 +117,8 @@ export interface OverseerDesignReviewResult {
   suggestedSubTask?: { prompt: string };
   /** Optional: agent type → instructions for that designer only (e.g. love-ux, game-designer). */
   gapsByAgent?: Record<string, string>;
+  /** Spec-kit Tier 2 PR2: structured Q&A appended to spec.md by the clarify stage. */
+  clarifications?: Array<{ question: string; answer?: string; targetAgent?: string }>;
 }
 
 export interface OverseerCodeReviewResult {
@@ -123,6 +127,16 @@ export interface OverseerCodeReviewResult {
   suggestedSubTask?: { prompt: string };
   /** Optional repo-relative paths for the coder to prioritise when fixing drift. */
   focusPaths?: string[];
+  /**
+   * Spec-kit Tier 2 PR2: per-artefact coverage summary the analyze stage can
+   * surface to the UI. All values 0..1; `contractsHonoured` undefined when no
+   * `contracts/` directory exists.
+   */
+  coverage?: {
+    specToCode: number;
+    tasksCompleted: number;
+    contractsHonoured?: number;
+  };
 }
 
 function buildBigBossUserMessage(prompt: string, workDir: string, archBrief?: string): string {
