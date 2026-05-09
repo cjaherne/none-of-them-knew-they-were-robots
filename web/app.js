@@ -17,6 +17,36 @@ function speak(text) {
   window.speechSynthesis.speak(utter);
 }
 
+/**
+ * Whitelist of artefact tabs displayed in the Artefacts panel. Order is
+ * surface order (Spec → Plan → Tasks → Checklists → Constitution), with the
+ * legacy DESIGN.md / REQUIREMENTS.md kept for v1 tasks. The `file` value
+ * MUST match the server-side ARTEFACT_WHITELIST in server/src/server.ts —
+ * a missing entry on either side will surface as a 400 in dev.
+ *
+ * The `triggerCategory` field tells the SSE handler which stage category's
+ * "succeeded" event should auto-refresh that artefact (so the user sees the
+ * file appear without having to click Refresh). Multiple categories may
+ * trigger the same artefact (e.g. spec.md is updated by both design merges
+ * and the clarify stage).
+ */
+const ARTEFACT_TABS = [
+  { file: "spec.md",          label: "Spec",          triggers: ["design", "clarify"] },
+  { file: "plan.md",          label: "Plan",          triggers: ["design"] },
+  { file: "TASKS.md",         label: "Tasks",         triggers: ["design", "coding"] },
+  { file: "CHECKLISTS.md",    label: "Checklists",    triggers: ["design", "checklist"] },
+  { file: "constitution.md",  label: "Constitution",  triggers: [] },
+  { file: "REQUIREMENTS.md",  label: "Requirements",  triggers: ["requirements"] },
+  { file: "DESIGN.md",        label: "Design (v1)",   triggers: ["design"] },
+];
+
+const artefactState = {
+  taskId: null,        // task we're displaying artefacts for
+  active: null,        // currently selected file
+  available: new Set(),// file names that returned 200 at least once
+  unavailable: new Set(), // file names that returned 404 most recently
+};
+
 // --- DOM refs ---
 const sidebarToggle = document.getElementById("sidebarToggle");
 const sidebar = document.getElementById("sidebar");
@@ -55,7 +85,16 @@ const logEntriesTop = document.getElementById("logEntriesTop");
 const stageBlocks = document.getElementById("stageBlocks");
 const logLevelSelect = document.getElementById("logLevelSelect");
 const tabLive = document.getElementById("tabLive");
+const tabArtefacts = document.getElementById("tabArtefacts");
 const tabHistory = document.getElementById("tabHistory");
+const artefactsView = document.getElementById("artefactsView");
+const artefactsEmpty = document.getElementById("artefactsEmpty");
+const artefactsStrip = document.getElementById("artefactsStrip");
+const artefactsToolbar = document.getElementById("artefactsToolbar");
+const artefactsSource = document.getElementById("artefactsSource");
+const artefactsRefreshBtn = document.getElementById("artefactsRefresh");
+const artefactsContent = document.getElementById("artefactsContent");
+const approvalPreviewSummary = document.getElementById("approvalPreviewSummary");
 const historyView = document.getElementById("historyView");
 const historyList = document.getElementById("historyList");
 const historyDetail = document.getElementById("historyDetail");
@@ -158,9 +197,16 @@ function handleApprovalRequired(data) {
   approvalSummary.textContent = summary;
   speak(summary);
 
+  // Reset shared inline elements injected by previous approvals.
+  const existingFailures = document.getElementById("checklistFailuresList");
+  if (existingFailures) existingFailures.remove();
+
   if (approvalType === "requirements") {
     approvalTitle.textContent = "Requirements Review";
     approvalTypeBadge.textContent = "Checklist";
+    if (approvalPreviewSummary) {
+      approvalPreviewSummary.textContent = "View REQUIREMENTS.md (scroll to read full document)";
+    }
 
     const preview = data.data?.requirementsPreview || "";
     if (preview) {
@@ -197,6 +243,9 @@ function handleApprovalRequired(data) {
   } else if (approvalType === "design") {
     approvalTitle.textContent = "Design Review";
     approvalTypeBadge.textContent = "BigBoss";
+    if (approvalPreviewSummary) {
+      approvalPreviewSummary.textContent = "View design (scroll to read full document)";
+    }
 
     const preview = data.data?.designPreview || "";
     if (preview) {
@@ -233,6 +282,9 @@ function handleApprovalRequired(data) {
   } else if (approvalType === "feedback") {
     approvalTitle.textContent = "Coding Feedback";
     approvalTypeBadge.textContent = "Feedback Loop";
+    if (approvalPreviewSummary) {
+      approvalPreviewSummary.textContent = "View feedback (scroll to read)";
+    }
 
     const preview = data.data?.feedbackPreview || "";
     if (preview) {
@@ -254,6 +306,67 @@ function handleApprovalRequired(data) {
     document.getElementById("actRedesign").addEventListener("click", () => {
       sendApprovalResponse({ approved: true, action: "redesign" });
     });
+  } else if (approvalType === "checklist") {
+    // CHECKLIST_BLOCKING=1 + still failing after fix-up: surface the failed
+    // items, let the user choose Override (with audit note), Re-run analyze
+    // (capped by MAX_CHECKLIST_REANALYZE_REWINDS server-side), or Cancel.
+    approvalTitle.textContent = "Checklist Blocking";
+    approvalTypeBadge.textContent = "Quality Gate";
+    if (approvalPreviewSummary) {
+      approvalPreviewSummary.textContent = "View CHECKLISTS.md (Artefacts tab also shows this)";
+    }
+    approvalPreviewBlock.style.display = "none";
+
+    const failedItems = Array.isArray(data.data?.failedItems) ? data.data.failedItems : [];
+    const failedCount = data.data?.failedCount ?? failedItems.length;
+    const canReanalyze = data.data?.canReanalyze !== false;
+    const rewindsUsed = data.data?.reanalyzeRewindsUsed ?? 0;
+    const rewindsMax = data.data?.reanalyzeRewindsMax ?? 1;
+
+    if (failedItems.length > 0) {
+      const list = document.createElement("ul");
+      list.id = "checklistFailuresList";
+      list.className = "checklist-failures";
+      for (const item of failedItems.slice(0, 12)) {
+        const li = document.createElement("li");
+        li.textContent = item;
+        list.appendChild(li);
+      }
+      if (failedItems.length > 12) {
+        const li = document.createElement("li");
+        li.style.color = "var(--text-dim)";
+        li.textContent = `… and ${failedItems.length - 12} more`;
+        list.appendChild(li);
+      }
+      approvalSummary.insertAdjacentElement("afterend", list);
+    }
+
+    revisionInputBlock.style.display = "";
+    revisionInput.placeholder = "Optional: reason for override (recorded in CHECKLISTS.md audit log)";
+
+    const reanalyzeLabel = canReanalyze
+      ? `Re-run Analyze (${rewindsUsed}/${rewindsMax})`
+      : `Re-run Analyze (cap reached)`;
+    approvalActions.innerHTML = `
+      <button class="btn-override" id="actOverride">Override &amp; Continue</button>
+      <button class="btn-reanalyze" id="actReanalyze" ${canReanalyze ? "" : "disabled style=\"opacity:0.4;cursor:not-allowed;\""}>${escapeHtml(reanalyzeLabel)}</button>
+      <button class="btn-cancel" id="actCancel">Cancel Pipeline</button>
+    `;
+
+    document.getElementById("actOverride").addEventListener("click", () => {
+      const feedback = revisionInput.value.trim() || undefined;
+      sendApprovalResponse({ approved: true, action: "override", feedback });
+    });
+    if (canReanalyze) {
+      document.getElementById("actReanalyze").addEventListener("click", () => {
+        sendApprovalResponse({ approved: true, action: "re-analyze" });
+      });
+    }
+    document.getElementById("actCancel").addEventListener("click", () => {
+      sendApprovalResponse({ approved: false, action: "cancel" });
+    });
+
+    speak(`Checklist blocking: ${failedCount} item${failedCount === 1 ? "" : "s"} still failing. Override, re-run analyze, or cancel.`);
   }
 
   approvalBanner.classList.add("visible");
@@ -277,6 +390,9 @@ async function sendApprovalResponse(response) {
     revise: "Revision requested. Re-running design.",
     continue: "Continuing to testing.",
     redesign: "Re-running design with feedback.",
+    override: "Override accepted. Continuing pipeline with audit note.",
+    "re-analyze": "Re-running analyze stage.",
+    cancel: "Pipeline cancelled.",
   };
   speak(msgs[response.action] || "Response sent.");
 }
@@ -496,6 +612,15 @@ function showPipeline(taskId) {
   lastStagesSnapshot = [];
   currentRunningTaskId = taskId;
 
+  // Reset artefact panel state for the new task. The unavailable set starts
+  // empty so every tab probes once on first click; we don't pre-fetch all of
+  // them to avoid hammering the workspace with reads before files exist.
+  artefactState.taskId = taskId;
+  artefactState.active = null;
+  artefactState.available = new Set();
+  artefactState.unavailable = new Set();
+  if (activeTab === "artefacts") rebuildArtefactStrip();
+
   if (adapter.isFeatureSupported("cancel")) {
     cancelBtn.style.display = "inline-block";
   } else {
@@ -610,6 +735,7 @@ function renderAllStageDetails(stages) {
     if (s.errors?.length) {
       html += `<div class="stage-errors">${s.errors.map(escapeHtml).join("<br>")}</div>`;
     }
+    html += renderStageResultChips(s);
     html += `</div>`;
   }
 
@@ -640,6 +766,140 @@ function renderAllStageDetails(stages) {
 
   stageDetail.innerHTML = html;
 }
+
+/**
+ * Render the v2 stage-result chips (clarifyResult / analyzeResult /
+ * checklistResult) on a stage card. Returns an HTML string ready to inject
+ * inside `.stage-card` markup. Returns "" when the stage has no chips,
+ * keeping v1 cards visually identical.
+ */
+function renderStageResultChips(s) {
+  const chips = [];
+
+  if (s.clarifyResult) {
+    const c = s.clarifyResult;
+    // gaps + no clarifications appended = harder fail (rewind imminent);
+    // gaps + clarifications appended = soft warn (gap was captured to spec.md).
+    const cls = c.fit === "ok" ? "ok" : (c.clarificationsAppended > 0 ? "warn" : "fail");
+    const tag = c.fit === "ok" ? "ok" : `gaps · ${c.gapCount}`;
+    chips.push(`<span class="result-chip ${cls}">clarify · ${escapeHtml(tag)}</span>`);
+    if (c.clarificationsAppended > 0) {
+      chips.push(`<span class="result-chip info">+${c.clarificationsAppended} clarification${c.clarificationsAppended === 1 ? "" : "s"} → spec.md</span>`);
+    }
+    if (c.iteration > 1) {
+      chips.push(`<span class="result-chip muted">iter ${c.iteration}</span>`);
+    }
+  }
+
+  if (s.analyzeResult) {
+    const a = s.analyzeResult;
+    const cls = a.fit === "drift" ? (a.fixUpsRun > 0 ? "warn" : "fail") : "ok";
+    chips.push(`<span class="result-chip ${cls}">analyze · ${escapeHtml(a.fit)}</span>`);
+    if (a.issueCount > 0) {
+      chips.push(`<span class="result-chip ${cls}">${a.issueCount} issue${a.issueCount === 1 ? "" : "s"}</span>`);
+    }
+    if (a.fixUpsRun > 0) {
+      chips.push(`<span class="result-chip info">${a.fixUpsRun} fix-up${a.fixUpsRun === 1 ? "" : "s"}</span>`);
+    }
+    if (a.capReached) {
+      chips.push(`<span class="result-chip warn">cap reached</span>`);
+    }
+  }
+
+  if (s.checklistResult) {
+    const c = s.checklistResult;
+    const cls = c.fit === "ok" ? "ok" : (c.userOverridden ? "warn" : "fail");
+    chips.push(`<span class="result-chip ${cls}">checklist · ${escapeHtml(c.fit)}</span>`);
+    chips.push(`<span class="result-chip muted">${c.passedCount} pass · ${c.failedCount} fail</span>`);
+    if (c.userOverridden) {
+      chips.push(`<span class="result-chip warn">overridden</span>`);
+    }
+  }
+
+  if (chips.length === 0) return "";
+  return `<div class="stage-result-chips">${chips.join("")}</div>`;
+}
+
+// --- Artefact panel ---
+function rebuildArtefactStrip() {
+  if (!artefactState.taskId) {
+    artefactsStrip.style.display = "none";
+    artefactsToolbar.style.display = "none";
+    artefactsContent.style.display = "none";
+    artefactsEmpty.style.display = "";
+    return;
+  }
+  artefactsEmpty.style.display = "none";
+  artefactsStrip.style.display = "";
+  artefactsStrip.innerHTML = "";
+  for (const tab of ARTEFACT_TABS) {
+    const btn = document.createElement("button");
+    btn.className = "artefact-tab";
+    btn.dataset.file = tab.file;
+    btn.textContent = tab.label;
+    if (artefactState.unavailable.has(tab.file) && !artefactState.available.has(tab.file)) {
+      btn.classList.add("disabled");
+      btn.title = `${tab.file} not yet written`;
+    }
+    if (artefactState.active === tab.file) btn.classList.add("active");
+    btn.addEventListener("click", () => {
+      if (btn.classList.contains("disabled")) return;
+      loadArtefact(tab.file, { force: false });
+    });
+    artefactsStrip.appendChild(btn);
+  }
+}
+
+async function loadArtefact(file, { force = false } = {}) {
+  if (!artefactState.taskId || !adapter) return;
+  artefactState.active = file;
+  artefactsToolbar.style.display = "";
+  artefactsContent.style.display = "";
+  artefactsSource.textContent = file;
+  if (!force) artefactsContent.textContent = "Loading…";
+  rebuildArtefactStrip();
+
+  const result = await adapter.getArtefact(artefactState.taskId, file);
+  if (result.ok) {
+    artefactState.available.add(file);
+    artefactState.unavailable.delete(file);
+    artefactsContent.textContent = result.content || "(empty file)";
+  } else {
+    if (result.status === 404) {
+      artefactState.unavailable.add(file);
+      artefactState.available.delete(file);
+      artefactsContent.textContent = `(${file} not yet written — re-check after the relevant stage completes)`;
+    } else {
+      artefactsContent.textContent = `Error: ${result.message || result.status}`;
+    }
+  }
+  rebuildArtefactStrip();
+}
+
+/**
+ * Refresh artefact tabs that should reload after a given stage category
+ * succeeds. Called from the SSE handler when a `stage_update` arrives with
+ * status === "succeeded". Only refreshes the currently-displayed artefact
+ * to avoid burning network on tabs the user isn't looking at — the
+ * `available`/`unavailable` set update happens on next click.
+ */
+function refreshArtefactsForCategory(category) {
+  if (!artefactState.taskId || !category) return;
+  for (const tab of ARTEFACT_TABS) {
+    if (!tab.triggers.includes(category)) continue;
+    // Always invalidate cached "unavailable" so the tab re-enables once the
+    // file lands. The next click (or active-tab refresh below) will re-check.
+    artefactState.unavailable.delete(tab.file);
+    if (artefactState.active === tab.file) {
+      loadArtefact(tab.file, { force: true });
+    }
+  }
+  rebuildArtefactStrip();
+}
+
+artefactsRefreshBtn?.addEventListener("click", () => {
+  if (artefactState.active) loadArtefact(artefactState.active, { force: true });
+});
 
 // --- Streaming ---
 // Track running indicators per stage (supports parallel stages)
@@ -819,6 +1079,17 @@ function handleStreamEvent(data) {
         collapseStageBlock(stageName, `— ${summary}`, "succeeded");
         addLogEntry(`${s.agent || s.name} completed ${summary}`, "success", stageName);
         speak(`${s.name} complete. ${files} files modified${dur ? ` in ${dur}` : ""}.`);
+        // Refresh artefact panel: stage name doubles as a category hint for
+        // the v2 stages (`clarify` / `analyze` / `checklist`); for everything
+        // else we map by the stage's named category when carried.
+        const inferredCategory =
+          stageName === "clarify" || stageName === "analyze" || stageName === "checklist"
+            ? stageName
+            : (stageName.startsWith("design") || stageName.includes("design") ? "design"
+              : stageName.startsWith("coding") || stageName.includes("coding") ? "coding"
+              : stageName === "requirements" ? "requirements"
+              : null);
+        if (inferredCategory) refreshArtefactsForCategory(inferredCategory);
       } else if (s.status === "failed") {
         const err = s.errors?.length ? `: ${s.errors[0]}` : "";
         collapseStageBlock(stageName, err ? `— ${err}` : "— failed", "failed");
@@ -1027,11 +1298,13 @@ function handleLogEntryEvent(data, stageContext = null) {
 let activeTab = "live";
 
 tabLive.addEventListener("click", () => switchTab("live"));
+tabArtefacts.addEventListener("click", () => switchTab("artefacts"));
 tabHistory.addEventListener("click", () => switchTab("history"));
 
 function switchTab(tab) {
   activeTab = tab;
   tabLive.classList.toggle("active", tab === "live");
+  tabArtefacts.classList.toggle("active", tab === "artefacts");
   tabHistory.classList.toggle("active", tab === "history");
 
   const liveElements = [statusEl, approvalBanner, pipelinePanel, taskLog, document.getElementById("mobilePrompt")];
@@ -1045,6 +1318,20 @@ function switchTab(tab) {
     loadHistory();
   } else {
     historyView.classList.remove("visible");
+  }
+
+  if (tab === "artefacts") {
+    artefactsView.classList.add("visible");
+    rebuildArtefactStrip();
+    // Auto-load the active tab if any, else default to spec.md when present.
+    if (artefactState.taskId) {
+      const target = artefactState.active
+        || (artefactState.available.size ? [...artefactState.available][0] : null)
+        || ARTEFACT_TABS[0].file;
+      loadArtefact(target, { force: false });
+    }
+  } else {
+    artefactsView.classList.remove("visible");
   }
 }
 

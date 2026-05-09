@@ -44,6 +44,13 @@ export interface StageStatus {
     fit: "ok" | "incomplete";
     passedCount: number;
     failedCount: number;
+    /**
+     * Set to true when the user accepted the checklist approval banner with
+     * the "Override and continue" action. Surfaced by the UI as an "(overridden)"
+     * badge so reviewers can see that the failing items were waived rather
+     * than satisfied.
+     */
+    userOverridden?: boolean;
   };
 }
 
@@ -63,6 +70,13 @@ export interface RuntimeTask extends Task {
   requireDesignApproval: boolean;
   /** Pause after REQUIREMENTS.md is written so the user can approve or revise before design/coding. */
   requireRequirementsApproval: boolean;
+  /**
+   * Resolved workspace directory after setupWorkspace() runs. Distinct from
+   * `workspace` (the user-supplied path, which may be undefined for ephemeral
+   * tasks). The artefacts endpoint reads files relative to this path; nothing
+   * else does. Set by the orchestrator immediately after setupWorkspace.
+   */
+  workDir?: string;
   stages: StageStatus[];
 }
 
@@ -122,6 +136,18 @@ class TaskStore {
 
   getTask(taskId: string): RuntimeTask | undefined {
     return this.tasks.get(taskId);
+  }
+
+  /**
+   * Stamp the resolved workspace directory on the task so the artefacts
+   * endpoint can serve files from it. Called by the orchestrator immediately
+   * after setupWorkspace() returns. No-op when the task is unknown.
+   */
+  setWorkDir(taskId: string, workDir: string): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    task.workDir = workDir;
+    task.updatedAt = new Date().toISOString();
   }
 
   setStages(taskId: string, stages: StageStatus[]): void {

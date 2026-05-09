@@ -18,6 +18,8 @@ A voice-controlled multi-agent AI design and development team: a **web UI**, a *
 
 **Version 2.7** — **Spec-kit Tier 2 PR4 — `ARTEFACT_SCHEMA=v2` is now the default.** New tasks get the `clarify` / `analyze` / `checklist` Overseer sub-stages, the `spec.md` / `plan.md` / `CHECKLISTS.md` artefact tree, and the `constitution.md` prompt prepend automatically — no env var required. Legacy v1 behaviour is preserved for one release as the explicit opt-out **`ARTEFACT_SCHEMA=v1`**. Designer skill packs (`ux-designer`, `core-code-designer`, `graphics-designer`, `game-designer`, `love-architect`, `love-ux`) now write per-artefact `.pipeline/<agent>-spec.md` / `.pipeline/<agent>-plan.md` contributions natively (in addition to the legacy `.pipeline/<agent>-design.md` write that v1 still depends on), so v2 spec/plan content reflects each designer's specialisation instead of being derived from the merged `DESIGN.md`. Removed the unused `writeDesignCompatShim` from `plan-artifact.ts` (declared but never wired). Pipeline diagram below has been rewritten for the v2 lifecycle.
 
+**Version 2.8** — **Spec-kit Tier 2 PR5 — v2 visibility in the web UI.** Closes the gap left by 2.6 / 2.7: the v2 backend wrote `spec.md` / `plan.md` / `TASKS.md` / `CHECKLISTS.md` / `constitution.md` and emitted per-stage `clarifyResult` / `analyzeResult` / `checklistResult` payloads, but none of that was visible. New **`Artefacts` tab** with a Spec / Plan / Tasks / Checklists / Constitution / Requirements / Design (v1) sub-strip — lazy-fetched on click, auto-disabled when the file isn't written yet, and auto-refreshed when the relevant stage succeeds. New **`GET /tasks/:id/artefacts/:file`** endpoint backs the panel (whitelist + path-traversal hardening; pure helper extracted to [`server/src/artefact-endpoint.ts`](server/src/artefact-endpoint.ts) for unit testing). **Stage cards** now render result chips for clarify (gaps / clarifications appended → `spec.md`), analyze (drift, issue count, fix-ups, cap), and checklist (pass / fail counts + override badge). New **`approvalType: "checklist"` approval banner** for `CHECKLIST_BLOCKING=1`: turns the previous silent pipeline failure into a three-action gate — **Override & Continue** (records the override in `CHECKLISTS.md` via a new `appendOverrideNote()` audit helper that flips `[!]` → `[~]` and appends a `## Overrides` footer), **Re-run Analyze** (rewinds one stage, capped at 1 to avoid infinite loops), or **Cancel Pipeline**. 15 new unit tests under `server/test/artefact-endpoint.test.ts` (whitelist + path-traversal + 200/404 branches + every whitelisted artefact roundtrip + 5 override-helper tests). Full server test suite: 49/49 pass.
+
 ## Overview
 
 Speak or type a task, and specialist agents — designers, coders, testers — collaborate via Cursor CLI to complete it. New agent types are added mostly through **skill packs** under `skills/`, not by changing the server core.
@@ -209,12 +211,13 @@ You can open `web/index.html` directly (or serve the `web/` folder elsewhere). I
 ## Usage
 
 - **Sidebar** — command, project (workspace, repo, branches, pipeline mode), voice, **design approval**, **requirements approval** (pause before design to edit the extracted checklist), **Server** (API URL), logging level.
-- **Live / History** — current run vs past tasks and logs.
+- **Live / Artefacts / History** — current run, **the v2 artefact tree** (`spec.md` / `plan.md` / `TASKS.md` / `CHECKLISTS.md` / `constitution.md` plus `REQUIREMENTS.md` / `DESIGN.md` for v1), and past tasks and logs.
+- **Stage cards** — show v2 result chips for `clarify` (gaps + clarifications appended), `analyze` (drift + issue/fix-up counts + cap), and `checklist` (pass / fail counts + override badge).
 - **Voice** — browser SpeechRecognition where available; otherwise server-side Whisper if configured.
 
-Human-in-the-loop: design approval, coding feedback loops, pipeline cancel. See in-app behaviour for iteration limits and summaries.
+Human-in-the-loop: requirements approval, design approval, coding feedback loops, **checklist blocking** (when `CHECKLIST_BLOCKING=1`: failing items list + Override & Continue / Re-run Analyze / Cancel), and pipeline cancel at any time. See in-app behaviour for iteration limits and summaries.
 
-Structured logs and task history use SQLite at **`server/data/logs.db`**. Notable routes: `GET /logs`, `GET /tasks/history`, `GET /tasks/:id/detail`, `POST /config/log-level`. Debug file logs use the system temp directory under **`agents-robots-logs`**.
+Structured logs and task history use SQLite at **`server/data/logs.db`**. Notable routes: `GET /logs`, `GET /tasks/history`, `GET /tasks/:id/detail`, `GET /tasks/:id/artefacts/:file` (whitelisted markdown — see [`server/src/artefact-endpoint.ts`](server/src/artefact-endpoint.ts)), `POST /config/log-level`. Debug file logs use the system temp directory under **`agents-robots-logs`**.
 
 ## Adding a new agent type
 
@@ -240,7 +243,8 @@ npx tsc --noEmit -p server/tsconfig.json
 
 # Run server unit tests (Node 20+ built-in test runner; covers ARTEFACT_SCHEMA flag,
 # pipeline-stages.injectV2OverseerStages shape, checklist-stage helpers + noop branches,
-# and CHECKLISTS.md tickers)
+# CHECKLISTS.md tickers, the artefact-endpoint helper (whitelist + path traversal +
+# 200/404 branches), and CHECKLISTS.md override audit-trail helper)
 npm test
 ```
 
@@ -262,7 +266,7 @@ The `web/` package has a simple `npm run dev` (static serve) if you want to iter
 | `MERGE_MODEL` | Design merge model (defaults to `BIGBOSS_MODEL`) | Optional |
 | `LOVE_SMOKE_CHECKLIST` | (v1 only — **deprecated for `ARTEFACT_SCHEMA=v2`**, where `CHECKLISTS.md` inherits the same bullets) If `1`, after a successful LÖVE **coding** stage, log a JSON smoke assessment (movement / persistence) from a read-only model pass | Optional |
 | `ARTEFACT_SCHEMA` | **Default `v2` (since v2.7)** — spec-kit Tier 2 artefact tree (`spec.md`, `plan.md`, `CHECKLISTS.md`) + `clarify` / `analyze` / `checklist` Overseer sub-stages. Set to `v1` for one-release opt-out to the legacy single-`DESIGN.md` flow (byte-identical pre-v2.6 behaviour) | Optional |
-| `CHECKLIST_BLOCKING` | If `1` and `ARTEFACT_SCHEMA=v2`, fail the pipeline when `CHECKLISTS.md` is still incomplete after the auto fix-up budget. Default advisory-only | Optional |
+| `CHECKLIST_BLOCKING` | If `1` and `ARTEFACT_SCHEMA=v2`, surface the new **checklist approval banner** (Override & Continue / Re-run Analyze / Cancel) when `CHECKLISTS.md` is still incomplete after the auto fix-up budget. Override accepts an optional reason and records `[~]` in the file via `appendOverrideNote()`. Default advisory-only (no gate) | Optional |
 | `CONSTITUTION_BOOTSTRAP` | If `1` and `.specify/memory/constitution.md` (or `CONSTITUTION.md`) is missing, bootstrap a draft from the user's task prompt at the start of the pipeline | Optional |
 
 ### `CURSOR_AGENT_MODEL` syntax

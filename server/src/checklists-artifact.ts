@@ -254,3 +254,80 @@ export async function readChecklistsMd(workDir: string): Promise<string> {
     return "";
   }
 }
+
+/**
+ * Append an audit note when the user overrides one or more failed checklist
+ * items via the approval banner. The original `[!]` markers are preserved
+ * so the failure history stays visible; the overridden items get a marker
+ * change to `[~]` (overridden) plus an italic suffix with timestamp + reason.
+ *
+ * The footer block at the bottom of the file keeps a chronological log of
+ * overrides so a reviewer scanning the file sees them in one place.
+ *
+ * Conservative on miss: items whose text doesn't match any `[!]` line are
+ * recorded in the footer but never inserted as new bullets.
+ */
+export async function appendOverrideNote(
+  workDir: string,
+  failedItems: string[],
+  meta?: { reason?: string; userAt?: string },
+): Promise<{ updated: number; appendedFooter: boolean }> {
+  const log = createLogger("checklists");
+  const outPath = path.join(workDir, CHECKLISTS_FILE);
+  let body: string;
+  try {
+    body = await fs.readFile(outPath, "utf-8");
+  } catch {
+    log.warn("CHECKLISTS.md missing; cannot record override", undefined, "flow");
+    return { updated: 0, appendedFooter: false };
+  }
+
+  const stamp = (meta?.userAt ?? new Date().toISOString()).trim();
+  const reason = meta?.reason?.trim();
+  const suffix = `  _(overridden by user @ ${stamp}${reason ? `: ${reason}` : ""})_`;
+
+  const lines = body.split("\n");
+  let updated = 0;
+  const unmatched: string[] = [];
+  for (const raw of failedItems) {
+    const target = raw.trim();
+    if (!target) continue;
+    const idx = lines.findIndex(
+      (l) => l.startsWith("- [!]") && l.slice(5).trim().startsWith(target.slice(0, 60)),
+    );
+    if (idx === -1) {
+      unmatched.push(target);
+      continue;
+    }
+    lines[idx] = `- [~] ${lines[idx].slice(5).trim()}${suffix}`;
+    updated++;
+  }
+
+  // Footer audit block. Always appended when at least one item was supplied
+  // so reviewers can find the override in one scrollable location even if
+  // the inline tick was skipped (e.g. text drifted between runs).
+  const footerHeading = "## Overrides";
+  let appendedFooter = false;
+  if (failedItems.length > 0) {
+    if (!body.includes(footerHeading)) {
+      lines.push("", footerHeading, "");
+    }
+    lines.push(
+      `- ${stamp}: ${failedItems.length} item(s) overridden${reason ? ` (${reason})` : ""}.`,
+    );
+    if (unmatched.length > 0) {
+      lines.push(
+        `  - Unmatched (recorded for audit only): ${unmatched.map((u) => `"${u.slice(0, 80)}"`).join(", ")}`,
+      );
+    }
+    appendedFooter = true;
+  }
+
+  await fs.writeFile(outPath, lines.join("\n"), "utf-8");
+  log.info(
+    `Override appended: updated ${updated}, unmatched ${unmatched.length}`,
+    undefined,
+    "flow",
+  );
+  return { updated, appendedFooter };
+}
