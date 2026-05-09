@@ -47,6 +47,7 @@ import {
 import { writeChecklistsMd } from "./checklists-artifact";
 import { runClarifyStage } from "./clarify-stage";
 import { runAnalyzeStage } from "./analyze-stage";
+import { runChecklistStage } from "./checklist-stage";
 import {
   FULL_STAGES,
   RELEASE_STAGE,
@@ -743,7 +744,10 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
   let designFeedbackByAgent: Record<string, string> | undefined;
   let designReviewIterations = 0;
   let codeReviewIterations = 0;
+  let checklistFixUps = 0;
   let loveTestFixIterations = 0;
+  /** Single-shot guard so the LOVE_SMOKE_CHECKLIST deprecation note is logged once per pipeline. */
+  let loveSmokeDeprecationWarned = false;
   /** After Overseer design gaps: if non-null, next parallel design pass re-runs only these agent ids (subset of group). */
   let pendingPartialDesignRerun: string[] | null = null;
   let feedbackFingerprint: string | undefined;
@@ -1234,6 +1238,87 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
         continue;
       }
 
+      // Spec-kit Tier 2 PR3 — `checklist` stage dispatch (v2 only). Replaces
+      // the legacy LOVE_SMOKE_CHECKLIST=1 env path with a stack-agnostic
+      // read-only review of CHECKLISTS.md (PR1 artefact). On `incomplete`,
+      // hands off to a single coding fix-up (cap MAX_CHECKLIST_FIX_ITERATIONS
+      // = 1). When CHECKLIST_BLOCKING=1 is set and the final state is
+      // `incomplete`, the pipeline is failed; otherwise advisory-only
+      // (matches plan §12 Q4).
+      if (stage.category === "checklist") {
+        const stageStart = new Date().toISOString();
+        taskStore.updateStage(task.id, stage.name, { status: "running", startedAt: stageStart });
+
+        const codingAgentType = pipelineStack === "love" ? "lua-coding" : "coding";
+        const checklistOutcome = await runChecklistStage({
+          workDir,
+          originalTask: task.prompt,
+          taskId: task.id,
+          signal,
+          stack: pipelineStack,
+          initialFixUps: checklistFixUps,
+          fixUpRunner: async (focusedPrompt) => {
+            const fixUpSessionId = await sessionRegistry.getOrCreate(codingAgentType);
+            const fixUpConfig: AgentRunConfig = {
+              ...baseConfig,
+              prompt: focusedPrompt,
+              agentType: codingAgentType,
+              category: "coding",
+              workspaceReady: true,
+              trivial: isTrivial,
+              complexity,
+              upstreamResults: [...upstreamResults],
+              agentBrief: agentBriefs[codingAgentType] ?? null,
+              cursorSessionId: fixUpSessionId,
+            };
+            return runAgent(fixUpConfig, workDir, undefined, signal);
+          },
+        });
+
+        if (signal.aborted) { taskStore.cleanupAbort(task.id); return; }
+
+        checklistFixUps = checklistOutcome.fixUpsRun;
+        for (const r of checklistOutcome.fixUpResults) upstreamResults.push(r);
+
+        const passedCount = checklistOutcome.result?.items.filter((i) => i.status === "pass").length ?? 0;
+        const failedCount = checklistOutcome.result?.failed.length ?? 0;
+        taskStore.updateStage(task.id, stage.name, {
+          status: "succeeded",
+          completedAt: new Date().toISOString(),
+          notes:
+            `Overseer checklist: ${checklistOutcome.status}` +
+            (failedCount > 0 ? ` (${failedCount} failed)` : "") +
+            (checklistOutcome.fixUpResults.length > 0
+              ? ` (${checklistOutcome.fixUpResults.length} fix-up)`
+              : ""),
+          checklistResult:
+            checklistOutcome.result
+              ? {
+                  fit: checklistOutcome.result.fit,
+                  passedCount,
+                  failedCount,
+                }
+              : undefined,
+        });
+
+        if (checklistOutcome.shouldBlock) {
+          taskStore.emit_log(
+            task.id,
+            `CHECKLIST_BLOCKING=1: ${failedCount} item(s) still failing after fix-up; failing pipeline.`,
+          );
+          taskStore.updateTaskStatus(
+            task.id,
+            TaskStatus.Failed,
+            `Checklist blocking: ${failedCount} item(s) failed`,
+          );
+          taskStore.cleanupAbort(task.id);
+          return;
+        }
+
+        groupIndex++;
+        continue;
+      }
+
       log.info(`Stage ${stage.name} started (agent: ${stage.agent})`, { stage: stage.name, agent: stage.agent }, "status");
 
       taskStore.updateStage(task.id, stage.name, {
@@ -1606,22 +1691,42 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
             }
           }
 
+          // Spec-kit Tier 2 PR3 — LOVE_SMOKE_CHECKLIST is deprecated. v2 runs
+          // the stack-agnostic `checklist` stage automatically (which inherits
+          // OVERSEER_LOVE_CODE_CHECKLIST bullets for LÖVE). The legacy env
+          // path remains here for v1 compat only; emits a deprecation warning
+          // when set so users have time to migrate.
           if (
             stage.category === "coding" &&
             result.success &&
             pipelineStack === "love" &&
             process.env.LOVE_SMOKE_CHECKLIST === "1"
           ) {
-            const smoke = await runLoveSmokeChecklistOpenAI(workDir, task.prompt);
-            if (smoke) {
-              taskStore.emit_log(
-                task.id,
-                `LÖVE smoke checklist: ${JSON.stringify({
-                  movementOk: smoke.movementOk,
-                  persistenceOk: smoke.persistenceOk,
-                  issues: smoke.issues,
-                })}`,
-              );
+            if (isArtefactSchemaV2()) {
+              if (!loveSmokeDeprecationWarned) {
+                loveSmokeDeprecationWarned = true;
+                log.warn(
+                  "LOVE_SMOKE_CHECKLIST is deprecated; CHECKLISTS.md is generated automatically when ARTEFACT_SCHEMA=v2. Skipping legacy LÖVE smoke pass.",
+                  undefined,
+                  "flow",
+                );
+                taskStore.emit_log(
+                  task.id,
+                  "LOVE_SMOKE_CHECKLIST is deprecated; the v2 `checklist` stage covers this and more. Unset the env var to silence this warning.",
+                );
+              }
+            } else {
+              const smoke = await runLoveSmokeChecklistOpenAI(workDir, task.prompt);
+              if (smoke) {
+                taskStore.emit_log(
+                  task.id,
+                  `LÖVE smoke checklist: ${JSON.stringify({
+                    movementOk: smoke.movementOk,
+                    persistenceOk: smoke.persistenceOk,
+                    issues: smoke.issues,
+                  })}`,
+                );
+              }
             }
           }
 
