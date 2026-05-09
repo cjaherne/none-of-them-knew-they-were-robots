@@ -35,6 +35,14 @@ Respond with JSON containing:
 - Use **pixel or relative anchors** tied to the target resolution; name states that align with architect scene names when possible.
 - Do not specify internal `require` chains; reference scene/module names as labels only.
 
+## Output (v2 artefact contributions)
+
+When `ARTEFACT_SCHEMA=v2` is active (default since v2.7), in addition to your legacy design file (see role rules), ALSO write your specialisation's contribution to:
+
+- `.pipeline/love-ux-spec.md` — `userFlows` (per mode: menu vs in-game), `wireframes` (screen layouts with pixel/anchor regions and element lists), `interactions` (input mappings + transitions), `accessibility` notes for the chosen resolution, in-world readability `recommendations` (contrast, telegraphing, hit feedback). This is "what + why" content; it merges into the workspace `spec.md`. Use plain markdown — the orchestrator concatenates per-designer files under a `## love-ux` heading.
+
+Stay in your lane: do not duplicate core `mechanics` (those belong in **Game Designer**'s `-spec.md`) or module/`require` graphs (that's **LÖVE Architect**'s `-plan.md`). Reference scene/module names as labels only. If you cannot write the v2 contribution (tool failure, etc.), still produce the legacy design file — the orchestrator will derive `spec.md` from `DESIGN.md` as a fallback.
+
 ## Constraints
 
 - Output is specification text / structured JSON — not `.lua` UI code

@@ -311,14 +311,21 @@ Your job:
 2. Write your design to: .pipeline/AGENT_TYPE-design.md
    (where AGENT_TYPE is your agent name, provided in the prompt below).
    DO NOT write to DESIGN.md -- the orchestrator will merge all parallel designs.
-3. The design document should include:
+3. **ARTEFACT_SCHEMA=v2 (default since v2.7):** in addition to the design file
+   above, ALSO write your specialisation's per-artefact contribution as
+   directed by your skill pack. Most designers also write
+   .pipeline/AGENT_TYPE-spec.md (what + why content) and/or
+   .pipeline/AGENT_TYPE-plan.md (how / architecture content); see your
+   "Output (v2 artefact contributions)" section. The orchestrator merges
+   these per-designer files into the workspace's spec.md / plan.md.
+4. The design document should include:
    - High-level architecture and approach (from your specialization's perspective)
    - File/directory structure for the implementation
    - Key data models, interfaces, or schemas
    - Component breakdown with responsibilities
    - Dependencies and technology choices with rationale
    - Any important implementation notes for the Coding Agent
-4. Be specific and actionable -- the Coding Agent will use the merged document
+5. Be specific and actionable -- the Coding Agent will use the merged document
    as its sole blueprint. Include code snippets or pseudocode where helpful.
 
 If the workspace already contains source files (shown in the Workspace File Tree),

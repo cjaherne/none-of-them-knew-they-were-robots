@@ -63,9 +63,18 @@ Stay in your lane so merge + coding stay coherent:
 - **LÖVE UX** owns menu/HUD layout; reference their flows briefly if needed but do not spec screen coordinates here.
 - **Game-art** (post-merge, pre-code) generates raster PNGs from the merged design; keep your specs **ASCII-friendly** and list entity names so sprites can be named consistently (e.g. mole, rocket, grenade).
 
+## Output (v2 artefact contributions)
+
+When `ARTEFACT_SCHEMA=v2` is active (default since v2.7), in addition to your legacy design file (see role rules), ALSO write your specialisation split across two per-artefact files:
+
+- `.pipeline/game-designer-spec.md` — `requirementsChecklist`, `mechanics`, `controls`, in-world visual gameplay notes (silhouette, projectile clarity, animation states), `scenesOrScreens` overview, `persistence` intent (what to save / when). This is "what + why" content; it merges into the workspace `spec.md`. Use plain markdown — the orchestrator concatenates per-designer files under a `## game-designer` heading.
+- `.pipeline/game-designer-plan.md` — `gameLoop` (main.lua structure, update/draw flow, state machine), `fileStructure` (high-level Lua/LÖVE layout — but defer module-level detail to `love-architect`), `assetStructure`, `implementationOrder`. This is "how" content; it merges into the workspace `plan.md`.
+
+Stay in your lane: do not duplicate the full module/`require` graph that **LÖVE Architect** owns in their `-plan.md`, and do not specify HUD pixel layout (that's **LÖVE UX**'s `-spec.md`). If you cannot write either v2 file (tool failure, etc.), still produce the legacy design file — the orchestrator will derive both `spec.md` and `plan.md` from `DESIGN.md` as a fallback.
+
 ## Constraints
 
 - Produce design specifications only — DO NOT write implementation code
 - DO NOT run commands or install dependencies
-- Output to `.pipeline/game-designer-design.md` (see role rules)
+- Output to `.pipeline/game-designer-design.md` (see role rules); when v2 is active also write `.pipeline/game-designer-spec.md` and `.pipeline/game-designer-plan.md` per the section above
 - Be specific and actionable — the coding agent will use this as the blueprint

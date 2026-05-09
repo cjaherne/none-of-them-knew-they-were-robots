@@ -16,6 +16,8 @@ A voice-controlled multi-agent AI design and development team: a **web UI**, a *
 
 **Version 2.6** — **Spec-kit Tier 1 + Tier 2 (PR1–PR3, additive)**: a project-wide **`constitution.md`** (governance) is prepended to every agent prompt, and **`TASKS.md`** (dependency-aware task list with file paths + R-numbered links) is generated after the design merge so coding agents have an executable plan. An opt-in **`ARTEFACT_SCHEMA=v2`** flag enables the v2 artefact tree — **`spec.md`** (what/why), **`plan.md`** (how), **`CHECKLISTS.md`** (acceptance + smoke + governance) — alongside a back-compat `DESIGN.md` shim. Three new Overseer sub-stages replace the inline post-design / post-coding reviews when the flag is set: **`clarify`** (rewinds parallel design on gaps and appends clarifications to `spec.md`), **`analyze`** (drift detection with bounded coding fix-ups), and **`checklist`** (read-only `CHECKLISTS.md` review with one auto-fix; advisory by default, blocking under `CHECKLIST_BLOCKING=1`). **`LOVE_SMOKE_CHECKLIST`** is now **deprecated for v2** (the stack-agnostic `checklist` stage inherits the same bullets). First **server unit test suite** ships under `server/test/` (Node 20+ built-in `node:test` runner; `npm test` in `server/` or via the workspace runner from the repo root).
 
+**Version 2.7** — **Spec-kit Tier 2 PR4 — `ARTEFACT_SCHEMA=v2` is now the default.** New tasks get the `clarify` / `analyze` / `checklist` Overseer sub-stages, the `spec.md` / `plan.md` / `CHECKLISTS.md` artefact tree, and the `constitution.md` prompt prepend automatically — no env var required. Legacy v1 behaviour is preserved for one release as the explicit opt-out **`ARTEFACT_SCHEMA=v1`**. Designer skill packs (`ux-designer`, `core-code-designer`, `graphics-designer`, `game-designer`, `love-architect`, `love-ux`) now write per-artefact `.pipeline/<agent>-spec.md` / `.pipeline/<agent>-plan.md` contributions natively (in addition to the legacy `.pipeline/<agent>-design.md` write that v1 still depends on), so v2 spec/plan content reflects each designer's specialisation instead of being derived from the merged `DESIGN.md`. Removed the unused `writeDesignCompatShim` from `plan-artifact.ts` (declared but never wired). Pipeline diagram below has been rewritten for the v2 lifecycle.
+
 ## Overview
 
 Speak or type a task, and specialist agents — designers, coders, testers — collaborate via Cursor CLI to complete it. New agent types are added mostly through **skill packs** under `skills/`, not by changing the server core.
@@ -87,34 +89,50 @@ flowchart LR
 
 Stages depend on **pipeline mode** (`full`, `auto`, `code-test`, `code-only`) and **BigBoss** routing in `auto` mode. **Web** stacks use UX / core-code / graphics designers, **`coding`**, **`testing`**. **LÖVE** stacks use **game-designer**, **love-architect**, **love-ux**, **`lua-coding`**, **`love-testing`**. A **release** stage is appended when applicable.
 
+The diagram below shows the **v2 lifecycle** (default since v2.7). With `ARTEFACT_SCHEMA=v1` the legacy flow runs instead — single merged `DESIGN.md`, inline post-design / post-coding Overseer reviews, optional `LOVE_SMOKE_CHECKLIST=1` smoke pass — see "Spec-kit Tier 2 (v2 default)" below for the side-by-side.
+
 ```mermaid
 flowchart TD
-  S[Workspace setup + context cache] --> R[Write REQUIREMENTS.md from prompt]
-  R --> Q{Requirements approval enabled?}
-  Q -->|yes| H1[Human: approve / revise / reject]
-  H1 -->|revise| R
-  Q -->|no| P[Plan stages BigBoss or fixed]
-  P --> D[Design stage(s)]
-  D --> M{Multiple parallel designers?}
-  M -->|yes| MG[Merge into DESIGN.md]
-  M -->|no| MG
-  MG --> L[Link REQUIREMENTS in DESIGN if needed]
-  L --> OD[Overseer design review]
-  OD -->|gaps| D
-  OD -->|ok| DA{Design approval enabled?}
-  DA -->|yes| H2[Human: approve / revise design]
-  DA -->|no| GArt[game-art DALL-E 3 if LÖVE]
-  H2 -->|approve| GArt
-  H2 -->|revise| D
-  GArt --> C[Coding + optional sub-tasks]
-  C --> V[Lint / optional love runtime verify]
-  V --> OC[Overseer code review + drift fix-ups]
-  OC --> SK{LOVE_SMOKE_CHECKLIST=1 and LÖVE stack?}
-  SK -->|yes| SM[Optional smoke JSON log]
-  SK -->|no| T[Testing stage]
-  SM --> T
-  T --> RL[Release: build PR merge squash tag on main]
+  S[Workspace setup + cache] --> R[Write REQUIREMENTS.md]
+  R --> RA{Requirements approval?}
+  RA -->|approve or off| K[Load constitution.md or bootstrap]
+  K --> P[BigBoss plan stages]
+  P --> D[Design parallel: per-stack designers]
+  D --> M[Per-artefact merge: spec.md plan.md research.md data-model.md contracts]
+  M --> T1[Write TASKS.md and CHECKLISTS.md]
+  T1 --> CL[clarify stage: Overseer design review]
+  CL -->|gaps| D
+  CL -->|ok| DA{Design approval?}
+  DA -->|approve or off| GArt[game-art DALL-E 3 if LÖVE]
+  DA -->|revise| D
+  GArt --> C[Coding or lua-coding reads TASKS.md]
+  C --> LB[Lint or Lua syntax]
+  LB --> EX[Execution verify build or luac]
+  EX --> AN[analyze stage: code review + bounded drift fix-ups]
+  AN --> CH[checklist stage: read-only CHECKLISTS.md pass]
+  CH -->|incomplete and budget| C
+  CH -->|ok or budget done or advisory| V[Validation: testing or love-testing]
+  V --> RL[Release: build PR squash-merge tag on main]
 ```
+
+#### Spec-kit Tier 2 (v2 default)
+
+Three Overseer sub-stages replace the inline post-design / post-coding reviews:
+
+| Stage | Replaces | Behaviour |
+|-------|----------|-----------|
+| **`clarify`** (after design merge) | inline `overseerPostDesignReview` | Reviews `spec.md`/`plan.md`; on `gaps`, rewinds to the design group with `gapsByAgent` partial re-runs; appends a `## Clarifications` section to `spec.md`. Design approval moves to **after** clarify so users see clarifications before approving. |
+| **`analyze`** (after coding) | inline `overseerPostCodeReview` | Reviews implementation vs design + `TASKS.md`; runs bounded drift fix-ups (cap `MAX_OVERSEER_CODE_ITERATIONS`) with optional `focusPaths`. |
+| **`checklist`** (after analyze, before validation) | LÖVE-only `LOVE_SMOKE_CHECKLIST=1` | Stack-agnostic read-only pass over `CHECKLISTS.md`; ticks `[X]` / `[!]`; on `incomplete`, hands off to **one** focused coding fix-up. **Advisory by default**; set `CHECKLIST_BLOCKING=1` to fail the pipeline on residual failures. LÖVE stacks inherit the existing smoke bullets verbatim. |
+
+v2 artefacts (always written to the workspace root):
+
+- **`constitution.md`** — project governance, prepended to every agent prompt. Auto-bootstrapped from the user task under `CONSTITUTION_BOOTSTRAP=1`.
+- **`spec.md`** — what + why; merged from per-designer `.pipeline/<agent>-spec.md` (with a `DESIGN.md`-derived fallback). Updated by the `clarify` stage with appended Q&A.
+- **`plan.md`** — how; merged from per-designer `.pipeline/<agent>-plan.md`.
+- **`TASKS.md`** — dependency-aware task list with file paths + `R#` requirement links. Coding agents read this first.
+- **`CHECKLISTS.md`** — acceptance + smoke + governance bullets. Ticked live by the `checklist` stage.
+- **`REQUIREMENTS.md`** + **`DESIGN.md`** — kept (DESIGN.md is still produced by the parallel-design merge for back-compat with Overseer prompts and coding-agent fallbacks; will be retired in a future PR).
 
 ### Parallel design merge and Overseer
 
@@ -243,7 +261,7 @@ The `web/` package has a simple `npm run dev` (static serve) if you want to iter
 | `BIGBOSS_MODEL` | OpenAI model for planning (default `gpt-4o-mini`) | Optional |
 | `MERGE_MODEL` | Design merge model (defaults to `BIGBOSS_MODEL`) | Optional |
 | `LOVE_SMOKE_CHECKLIST` | (v1 only — **deprecated for `ARTEFACT_SCHEMA=v2`**, where `CHECKLISTS.md` inherits the same bullets) If `1`, after a successful LÖVE **coding** stage, log a JSON smoke assessment (movement / persistence) from a read-only model pass | Optional |
-| `ARTEFACT_SCHEMA` | `v2` enables the spec-kit Tier 2 artefact tree (`spec.md`, `plan.md`, `CHECKLISTS.md`) and inserts the `clarify` / `analyze` / `checklist` Overseer sub-stages. Default `v1` keeps the legacy single-`DESIGN.md` flow byte-identical | Optional |
+| `ARTEFACT_SCHEMA` | **Default `v2` (since v2.7)** — spec-kit Tier 2 artefact tree (`spec.md`, `plan.md`, `CHECKLISTS.md`) + `clarify` / `analyze` / `checklist` Overseer sub-stages. Set to `v1` for one-release opt-out to the legacy single-`DESIGN.md` flow (byte-identical pre-v2.6 behaviour) | Optional |
 | `CHECKLIST_BLOCKING` | If `1` and `ARTEFACT_SCHEMA=v2`, fail the pipeline when `CHECKLISTS.md` is still incomplete after the auto fix-up budget. Default advisory-only | Optional |
 | `CONSTITUTION_BOOTSTRAP` | If `1` and `.specify/memory/constitution.md` (or `CONSTITUTION.md`) is missing, bootstrap a draft from the user's task prompt at the start of the pipeline | Optional |
 
