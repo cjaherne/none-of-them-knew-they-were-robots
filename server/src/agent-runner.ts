@@ -9,6 +9,7 @@ import { loadBigBossSystemPromptSync } from "./bigboss-prompt-loader";
 import { OVERSEER_LOVE_CODE_CHECKLIST, OVERSEER_LOVE_DESIGN_CHECKLIST } from "./overseer-love-checklists";
 import { getCursorAgentSessionsMode } from "./cursor-session-policy";
 import { formatConstitutionForPrompt } from "./constitution-artifact";
+import { isArtefactSchemaV2 } from "./artefact-schema";
 
 const log = createLogger("agent-runner");
 
@@ -904,7 +905,56 @@ function buildFullPrompt(
   const useDiskBasedContext =
     config.category === "coding" || config.category === "validation" || config.category === "game-art";
 
-  if (brief.designDoc) {
+  // v2 (ARTEFACT_SCHEMA=v2): prefer spec.md + plan.md previews over DESIGN.md.
+  // Falls through to the legacy DESIGN.md block when v2 is off, when neither
+  // spec.md nor plan.md exist on disk yet (PR1 transition), or when this is a
+  // design-stage agent (designers still produce per-agent design.md files).
+  let v2Surfaced = false;
+  if (
+    isArtefactSchemaV2() &&
+    config.category !== "design"
+  ) {
+    let specBody = "";
+    let planBody = "";
+    try { specBody = readFileSync(path.join(workDir, "spec.md"), "utf-8"); } catch { /* missing */ }
+    try { planBody = readFileSync(path.join(workDir, "plan.md"), "utf-8"); } catch { /* missing */ }
+    if (specBody.trim() || planBody.trim()) {
+      v2Surfaced = true;
+      const cap = useDiskBasedContext ? 3000 : 16000;
+      if (specBody.trim()) {
+        const preview = specBody.slice(0, cap);
+        const truncated = specBody.length > cap;
+        parts.push(useDiskBasedContext ? "## spec.md (preview)" : "## spec.md");
+        parts.push(
+          useDiskBasedContext
+            ? "PREVIEW of the specification (what + why). Read the full spec.md from disk for the complete document."
+            : "Specification for this task (what is being built and why):",
+        );
+        parts.push("```markdown");
+        parts.push(preview);
+        if (truncated) parts.push("\n... (truncated — read full spec.md from disk using your filesystem tool)");
+        parts.push("```");
+        parts.push("");
+      }
+      if (planBody.trim()) {
+        const preview = planBody.slice(0, cap);
+        const truncated = planBody.length > cap;
+        parts.push(useDiskBasedContext ? "## plan.md (preview)" : "## plan.md");
+        parts.push(
+          useDiskBasedContext
+            ? "PREVIEW of the implementation plan (how). Read the full plan.md from disk for architecture, integration boundaries, and strategy."
+            : "Implementation plan for this task (architecture and how to build it):",
+        );
+        parts.push("```markdown");
+        parts.push(preview);
+        if (truncated) parts.push("\n... (truncated — read full plan.md from disk using your filesystem tool)");
+        parts.push("```");
+        parts.push("");
+      }
+    }
+  }
+
+  if (brief.designDoc && !v2Surfaced) {
     if (useDiskBasedContext) {
       const preview = brief.designDoc.slice(0, 3000);
       const truncated = brief.designDoc.length > 3000;

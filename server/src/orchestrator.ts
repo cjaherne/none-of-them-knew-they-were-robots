@@ -36,6 +36,15 @@ import {
 } from "./requirements-artifact";
 import { bootstrapConstitutionFromTask } from "./constitution-artifact";
 import { writeTasksMd } from "./tasks-artifact";
+import { isArtefactSchemaV2 } from "./artefact-schema";
+import { mergeSpecContributions } from "./spec-artifact";
+import {
+  mergePlanContributions,
+  mergeResearchContributions,
+  mergeDataModelContributions,
+  collectContracts,
+} from "./plan-artifact";
+import { writeChecklistsMd } from "./checklists-artifact";
 import {
   FULL_STAGES,
   RELEASE_STAGE,
@@ -224,6 +233,59 @@ async function readDesignPreview(workDir: string): Promise<string> {
     return content.slice(0, 8000);
   } catch {
     return "";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Spec-kit Tier 2 PR1 — v2 artefact writers (gated by ARTEFACT_SCHEMA=v2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Run the v2 artefact writers (spec.md, plan.md, optional research.md /
+ * data-model.md / contracts/, plus CHECKLISTS.md) in addition to today's
+ * DESIGN.md. No-op when ARTEFACT_SCHEMA is unset or "v1".
+ *
+ * PR1 transition: when designers haven't been updated to write per-artefact
+ * `.pipeline/<agent>-{spec,plan}.md` files yet, mergeSpecContributions /
+ * mergePlanContributions fall back to deriving the body from the merged
+ * DESIGN.md so the v2 artefacts still appear in the workspace. DESIGN.md is
+ * NOT overwritten in PR1 — the compat shim (writeDesignCompatShim) is reserved
+ * for a follow-up PR once at least one designer is producing per-artefact
+ * outputs.
+ */
+async function runV2ArtefactWriters(
+  taskId: string,
+  workDir: string,
+  agents: string[],
+  originalTask: string,
+  stack: PipelineStack,
+): Promise<void> {
+  if (!isArtefactSchemaV2()) return;
+  const log = createLogger("artefact-v2");
+  try {
+    const specResult = await mergeSpecContributions(workDir, agents, originalTask);
+    if (specResult.merged) {
+      taskStore.emit_log(taskId, `Wrote spec.md (sources: ${specResult.sources.join(", ")}).`);
+    }
+    const planResult = await mergePlanContributions(workDir, agents);
+    if (planResult.merged) {
+      taskStore.emit_log(taskId, `Wrote plan.md (sources: ${planResult.sources.join(", ")}).`);
+    }
+    const researchWritten = await mergeResearchContributions(workDir, agents);
+    if (researchWritten) taskStore.emit_log(taskId, "Wrote research.md.");
+    const dataModelWritten = await mergeDataModelContributions(workDir, agents);
+    if (dataModelWritten) taskStore.emit_log(taskId, "Wrote data-model.md.");
+    const contractsCopied = await collectContracts(workDir, agents);
+    if (contractsCopied > 0) {
+      taskStore.emit_log(taskId, `Collected ${contractsCopied} contract file(s) into contracts/.`);
+    }
+    const checklists = await writeChecklistsMd({ workDir, stack, originalTask });
+    taskStore.emit_log(
+      taskId,
+      `Wrote CHECKLISTS.md (${checklists.itemCount} items, ${checklists.usedOpenAI ? "openai" : "fallback"}).`,
+    );
+  } catch (err) {
+    log.warn("v2 artefact writers failed (non-fatal)", { err: String(err) });
   }
 }
 
@@ -817,6 +879,14 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
         taskStore.emit_log(task.id, `Merged ${group.stageDefs.length} design documents`);
         await ensureDesignReferencesRequirements(workDir);
 
+        await runV2ArtefactWriters(
+          task.id,
+          workDir,
+          group.stageDefs.map((s) => s.agent),
+          task.prompt,
+          pipelineStack,
+        );
+
         try {
           const tasksResult = await writeTasksMd({
             workDir,
@@ -1085,6 +1155,14 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
               /* DESIGN.md may not exist yet */
             }
             await ensureDesignReferencesRequirements(workDir);
+
+            await runV2ArtefactWriters(
+              task.id,
+              workDir,
+              [stage.agent],
+              task.prompt,
+              pipelineStack,
+            );
 
             try {
               const tasksResult = await writeTasksMd({
