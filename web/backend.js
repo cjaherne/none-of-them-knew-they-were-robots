@@ -95,6 +95,27 @@ class BackendAdapter {
     return res.json();
   }
 
+  /**
+   * Fetch a whitelisted markdown artefact from the task workspace.
+   * Returns `{ ok: true, content }` on 200, `{ ok: false, status, message }`
+   * on 4xx/5xx so callers can disable a tab on 404 without wrapping every
+   * call in try/catch. Caller is responsible for whitelist enforcement.
+   */
+  async getArtefact(taskId, file) {
+    const url = `${this.baseUrl}/tasks/${encodeURIComponent(taskId)}/artefacts/${encodeURIComponent(file)}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      let msg = res.statusText || "Fetch failed";
+      try {
+        const body = await res.json();
+        if (body?.error) msg = body.error;
+      } catch { /* non-json */ }
+      return { ok: false, status: res.status, message: msg };
+    }
+    const content = await res.text();
+    return { ok: true, content };
+  }
+
   async setLogLevel(level) {
     const res = await fetch(`${this.baseUrl}/config/log-level`, {
       method: "POST",

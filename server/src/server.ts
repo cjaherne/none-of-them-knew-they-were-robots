@@ -4,6 +4,7 @@ import { config as loadEnv } from "dotenv";
 loadEnv({ path: path.resolve(__dirname, "..", ".env.local") });
 
 import express from "express";
+import { readArtefact } from "./artefact-endpoint";
 import { createLogger, addGlobalTransport, setGlobalLogLevel, getGlobalLogLevel } from "@agents/shared";
 import type { LogLevel, LogEntry } from "@agents/shared";
 import { SqliteTransport, getLogs, getTaskHistory, getTaskById, getLogsForTask } from "./log-store";
@@ -210,6 +211,30 @@ app.get("/logs", (req, res) => {
     offset: offset ? parseInt(offset as string, 10) : undefined,
   });
   res.json(rows);
+});
+
+// --- GET /tasks/:id/artefacts/:file ---
+// Serve a whitelisted markdown artefact from the task's resolved workspace.
+// Pure file-resolution + whitelist + path-traversal logic lives in
+// ./artefact-endpoint so it can be unit-tested without spinning up the
+// server. Returns 404 when the file hasn't been written yet (common during
+// early stages) so the UI can disable the tab.
+app.get("/tasks/:id/artefacts/:file", (req, res) => {
+  const { id, file } = req.params;
+  const task = taskStore.getTask(id);
+  if (!task) {
+    res.status(404).json({ error: "Task not found" });
+    return;
+  }
+  const result = readArtefact(task.workDir ?? "", file);
+  if (!result.ok) {
+    if (result.status >= 500) {
+      log.error("Artefact read failed", { error: result.error, id, file }, "error");
+    }
+    res.status(result.status).json({ error: result.error });
+    return;
+  }
+  res.type("text/markdown; charset=utf-8").send(result.content);
 });
 
 // --- GET /tasks/:id/detail ---

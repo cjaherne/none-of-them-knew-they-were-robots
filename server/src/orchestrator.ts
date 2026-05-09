@@ -44,7 +44,7 @@ import {
   mergeDataModelContributions,
   collectContracts,
 } from "./plan-artifact";
-import { writeChecklistsMd } from "./checklists-artifact";
+import { writeChecklistsMd, appendOverrideNote } from "./checklists-artifact";
 import { runClarifyStage } from "./clarify-stage";
 import { runAnalyzeStage } from "./analyze-stage";
 import { runChecklistStage } from "./checklist-stage";
@@ -60,6 +60,15 @@ import {
   type StageDefinition,
   type PipelineStack,
 } from "./pipeline-stages";
+
+/**
+ * Maximum number of times the user can rewind from the checklist approval
+ * banner back into the analyze stage. One rewind is the right tradeoff:
+ * gives the user a single "give it another go" pass without risking an
+ * indefinite analyze→checklist loop on a stubbornly failing item. After
+ * the cap, the banner drops the "Re-run analyze" button.
+ */
+const MAX_CHECKLIST_REANALYZE_REWINDS = 1;
 
 /** Placeholder upstream row when a parallel designer is skipped on a targeted gaps re-run (file on disk retained). */
 function syntheticRetainedDesignResult(agent: string): AgentRunResult {
@@ -606,6 +615,10 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
   try {
     workDir = await setupWorkspace(baseConfig as AgentRunConfig);
     log.info(`Workspace ready: ${workDir}, branch: ${task.branch}`, { workDir, branch: task.branch }, "status");
+    // Stamp the resolved workspace path on the task so GET /tasks/:id/artefacts/:file
+    // can serve files relative to it. Cheap (no event emit); workDir is stable
+    // for the lifetime of the pipeline.
+    taskStore.setWorkDir(task.id, workDir);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     taskStore.updateTaskStatus(task.id, TaskStatus.Failed, `Workspace setup failed: ${message}`);
@@ -748,6 +761,14 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
   let designReviewIterations = 0;
   let codeReviewIterations = 0;
   let checklistFixUps = 0;
+  /**
+   * Tracks how many times the user has chosen "re-analyze" from the checklist
+   * approval banner. Capped at MAX_CHECKLIST_REANALYZE_REWINDS to prevent an
+   * infinite analyze→checklist loop if the same items keep failing. Once the
+   * cap is hit, the checklist banner drops the "Re-run analyze" button on the
+   * UI side (the `data.canReanalyze` flag below).
+   */
+  let checklistReanalyzeRewinds = 0;
   let loveTestFixIterations = 0;
   /** Single-shot guard so the LOVE_SMOKE_CHECKLIST deprecation note is logged once per pipeline. */
   let loveSmokeDeprecationWarned = false;
@@ -1304,15 +1325,102 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
               : undefined,
         });
 
+        // CHECKLIST_BLOCKING=1 + still failing: ask the user instead of
+        // failing silently. Three actions keep the loop bounded:
+        //   - "cancel" / reject  → fail the pipeline (legacy behaviour).
+        //   - "override"         → record the override in CHECKLISTS.md and
+        //                          continue (audit trail preserved via
+        //                          appendOverrideNote so reviewers see why).
+        //   - "re-analyze"       → rewind one stage back into analyze and run
+        //                          its fix-up loop again, capped by
+        //                          MAX_CHECKLIST_REANALYZE_REWINDS.
         if (checklistOutcome.shouldBlock) {
+          const failedItems = checklistOutcome.result?.failed ?? [];
+          const canReanalyze = checklistReanalyzeRewinds < MAX_CHECKLIST_REANALYZE_REWINDS;
+          const summary = `Checklist blocking: ${failedCount} item(s) still failing after fix-up. Override to continue with an audit note, re-run analyze for another pass, or cancel.`;
+
           taskStore.emit_log(
             task.id,
-            `CHECKLIST_BLOCKING=1: ${failedCount} item(s) still failing after fix-up; failing pipeline.`,
+            `CHECKLIST_BLOCKING=1: ${failedCount} item(s) still failing; awaiting user decision (override / re-analyze / cancel).`,
+          );
+
+          const approval = await taskStore.requestApproval(task.id, summary, {
+            approvalType: "checklist",
+            failedCount,
+            failedItems: failedItems.slice(0, 20),
+            canReanalyze,
+            reanalyzeRewindsUsed: checklistReanalyzeRewinds,
+            reanalyzeRewindsMax: MAX_CHECKLIST_REANALYZE_REWINDS,
+          });
+
+          if (signal.aborted) { taskStore.cleanupAbort(task.id); return; }
+
+          const action = (approval.action ?? (approval.approved ? "approve" : "reject")).toLowerCase();
+          const isReanalyze = action === "re-analyze" || action === "reanalyze";
+          const isOverride = action === "override" || (approval.approved && action === "approve");
+
+          if (isReanalyze && canReanalyze) {
+            // Rewind to the analyze stage, which sits immediately before
+            // checklist (injectV2OverseerStages guarantees this ordering).
+            // Reset the per-pipeline iteration counters so analyze gets a
+            // fresh fix-up budget.
+            const analyzeIdx = stageGroups.findIndex(
+              (g) => g.stageDefs.length === 1 && g.stageDefs[0].category === "analyze",
+            );
+            if (analyzeIdx === -1) {
+              taskStore.emit_log(
+                task.id,
+                "Re-analyze requested but analyze stage not found in pipeline; falling back to override.",
+              );
+            } else {
+              checklistReanalyzeRewinds++;
+              codeReviewIterations = 0;
+              checklistFixUps = 0;
+              taskStore.emit_log(
+                task.id,
+                `Re-analyze requested (rewind ${checklistReanalyzeRewinds}/${MAX_CHECKLIST_REANALYZE_REWINDS}). Restarting analyze stage.`,
+              );
+              groupIndex = analyzeIdx;
+              continue;
+            }
+          }
+
+          if (isOverride) {
+            try {
+              const note = await appendOverrideNote(workDir, failedItems, {
+                reason: approval.feedback?.trim() || "User override via checklist banner",
+              });
+              taskStore.emit_log(
+                task.id,
+                `Checklist override accepted: ${note.updated} item(s) marked overridden in CHECKLISTS.md.`,
+              );
+            } catch (err) {
+              taskStore.emit_log(
+                task.id,
+                `Checklist override recorded but appendOverrideNote failed: ${String(err)}`,
+              );
+            }
+            taskStore.updateStage(task.id, stage.name, {
+              checklistResult: {
+                fit: checklistOutcome.result?.fit ?? "incomplete",
+                passedCount,
+                failedCount,
+                userOverridden: true,
+              },
+            });
+            groupIndex++;
+            continue;
+          }
+
+          // Default: cancel / reject.
+          taskStore.emit_log(
+            task.id,
+            `Checklist blocking: user cancelled (${failedCount} failing item(s)).`,
           );
           taskStore.updateTaskStatus(
             task.id,
             TaskStatus.Failed,
-            `Checklist blocking: ${failedCount} item(s) failed`,
+            `Checklist blocking: ${failedCount} item(s) failed (user cancelled)`,
           );
           taskStore.cleanupAbort(task.id);
           return;
