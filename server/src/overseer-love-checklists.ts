@@ -11,5 +11,5 @@ export const OVERSEER_LOVE_CODE_CHECKLIST = `## LÖVE code review checklist
 - love.load / love.update / love.draw exist and match the design’s scene flow.
 - require() graph is acyclic; no accidental globals for shared state.
 - Input layer matches design (keys + gamepad as specified).
-- Files referenced in DESIGN.md exist and implement the described behaviour.
+- Files referenced in spec.md / plan.md exist and implement the described behaviour.
 - Pure logic modules are testable (minimal love.* calls inside hot logic paths).`;

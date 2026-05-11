@@ -60,9 +60,9 @@ This file records **significant architectural and product decisions** in a light
 
 ## D-004 — Parallel design merge, then single blueprint
 
-**Status:** Accepted  
+**Status:** Accepted (artefact paths updated in **D-014**)  
 **Context:** Multiple designers run concurrently for speed and separation of concerns.  
-**Decision:** Each writes `.pipeline/<agent>-design.md`; orchestrator merges to root **`DESIGN.md`** (OpenAI merge or heuristic fallback).  
+**Decision:** Each writes `.pipeline/<agent>-spec.md` and `.pipeline/<agent>-plan.md`; orchestrator merges to root **`spec.md`** and **`plan.md`**.  
 **Consequences:** Merge quality is a bottleneck; Overseer gaps can trigger **partial reruns** (`gapsByAgent`) when the gap set is a strict subset of designers.  
 **Alternatives considered:** Strictly sequential design (rejected: slower, weaker separation).
 
@@ -90,21 +90,21 @@ This file records **significant architectural and product decisions** in a light
 
 ## D-007 — Cherry-pick spec-kit *concepts*, not the spec-kit CLI product
 
-**Status:** Accepted  
-**Context:** GitHub’s [spec-kit](https://github.com/github/spec-kit) is Python-first, interactive, and opinionated for greenfield repos. This project is already a **voice + multi-agent pipeline** with different UX.  
-**Decision:** Adopt **artefact shape** (`spec.md`, `plan.md`, `tasks`, checklists, constitution) and **named review phases** as **first-class pipeline stages**, implemented in TypeScript behind `ARTEFACT_SCHEMA`.  
-**Consequences:** No drop-in `specify` CLI workflow; documentation must speak in **this** repo’s terms. Tiered PRs (PR1 writers → PR2 clarify/analyze → PR3 checklist → PR4 default v2 → PR5 UI) managed rollout risk.  
+**Status:** Accepted (env-flag gating removed in **D-014**)  
+**Context:** GitHub's [spec-kit](https://github.com/github/spec-kit) is Python-first, interactive, and opinionated for greenfield repos. This project is already a **voice + multi-agent pipeline** with different UX.  
+**Decision:** Adopt **artefact shape** (`spec.md`, `plan.md`, `tasks`, checklists, constitution) and **named review phases** as **first-class pipeline stages**, implemented in TypeScript.  
+**Consequences:** No drop-in `specify` CLI workflow; documentation must speak in **this** repo's terms. Tiered PRs (PR1 writers → PR2 clarify/analyze → PR3 checklist → PR4 default → PR5 UI) managed rollout risk.  
 **Alternatives considered:** Vendor spec-kit wholesale (rejected in assessment: mismatched runtime and UX); ignore spec-kit entirely (rejected: useful shared vocabulary with collaborators).
 
 ---
 
 ## D-008 — v2 default with explicit v1 escape hatch
 
-**Status:** Accepted (since release **2.7.0**)  
-**Context:** Shipping v2 behind a flag forever splits the community and test matrix.  
-**Decision:** **`ARTEFACT_SCHEMA` unset ⇒ v2**; only explicit **`v1`** opts out (case-insensitive).  
-**Consequences:** New tasks get clarify/analyze/checklist and artefact tree by default; legacy users must set one env var during migration.  
-**Alternatives considered:** v2 opt-in forever (rejected: invisible wins); hard remove v1 immediately (rejected: too harsh for one release).
+**Status:** Superseded by **D-014** (v3.0.0)  
+**Context (historical):** Shipping v2 behind a flag forever split the community and test matrix.  
+**Decision (historical):** **`ARTEFACT_SCHEMA` unset ⇒ v2**; only explicit **`v1`** opted out (case-insensitive). Accepted in release **2.7.0**.  
+**Outcome:** The v1 escape hatch was retired wholesale in v3.0.0 (D-014); the env flag, the merged `DESIGN.md` surface, and the per-agent `<agent>-design.md` write are gone.  
+**Alternatives considered (historical):** v2 opt-in forever (rejected: invisible wins); hard remove v1 immediately (rejected at the time: too harsh for one release).
 
 ---
 
@@ -135,6 +135,23 @@ This file records **significant architectural and product decisions** in a light
 **Decision:** `MAX_CHECKLIST_REANALYZE_REWINDS = 1` in orchestrator; UI disables re-analyze when exhausted.  
 **Consequences:** User must **override** or **cancel** after one extra analyze pass.  
 **Alternatives considered:** Unlimited rewinds (rejected); zero rewinds (rejected: too little recovery).
+
+---
+
+## D-014 — Retire v1 artefact schema and merged `DESIGN.md`
+
+**Status:** Accepted (since release **3.0.0**) — supersedes **D-008**  
+**Context:** D-008 kept the v1 single-`DESIGN.md` flow as a one-release escape hatch behind `ARTEFACT_SCHEMA=v1`. The flag survived two releases unchanged. The dual-write contract (per-agent `<agent>-design.md` plus per-artefact `<agent>-spec.md` / `<agent>-plan.md`) and the v1 inline Overseer code paths (`overseerPostDesignReview`, `overseerPostCodeReview`, `LOVE_SMOKE_CHECKLIST`) were a constant drag on prompts, tests, and onboarding — every designer skill pack carried a fallback paragraph, every reader had to mentally diff v1 against v2, and the test matrix was twice as wide as the live runtime needed.  
+**Decision:** Remove the v1 surface wholesale in **v3.0.0**:  
+- Delete the `ARTEFACT_SCHEMA` env flag, the `artefact-schema.ts` module, and the `LOVE_SMOKE_CHECKLIST` env path.  
+- Stop writing per-agent `.pipeline/<agent>-design.md`; designers contribute only `-spec.md` / `-plan.md`.  
+- Stop merging to root `DESIGN.md`; the workspace's root artefact tree is `spec.md` / `plan.md` / `TASKS.md` / `CHECKLISTS.md` / `constitution.md` + `REQUIREMENTS.md`.  
+- Remove the `Design (v1)` tab from the Artefacts panel; `GET /tasks/:id/artefacts/DESIGN.md` returns **400**.  
+- Make `injectV2OverseerStages` and `runV2ArtefactWriters` unconditional (no env gate).  
+- Delete the inline post-design / post-coding Overseer code blocks and their helpers (`overseerPostDesignReview`, `overseerPostCodeReview`, `mergeDesignOutputs`, `runLoveSmokeChecklistOpenAI`, `prependOriginalTaskToDesign`, `ensureDesignReferencesRequirements`, `writeDesignCompatShim` stub).  
+- Realign `skills/coding/system-prompt.md` expertise to this repo's stack (TypeScript / Node / Express / React, `node:test`, MCP, SQLite, SSE).  
+**Consequences:** **Breaking** for any external client GET-ing `DESIGN.md` or pipeline workspaces that depended on `<agent>-design.md` on disk. Acceptable for a major bump. Internal benefits: one prompt path, one artefact tree, half the test matrix, no flag gymnastics in skill packs.  
+**Alternatives considered:** Keep the v1 escape hatch indefinitely (rejected: ongoing prompt drift, doubled review surface); hard-delete v1 without a major bump (rejected: violates SemVer); maintain a `DESIGN.md = spec.md + plan.md` compatibility shim (rejected: reintroduces dead code we just removed and gives external clients a quiet excuse to ignore the cut).
 
 ---
 

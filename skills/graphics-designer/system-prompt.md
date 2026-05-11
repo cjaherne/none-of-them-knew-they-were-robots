@@ -34,13 +34,11 @@ Respond with JSON containing:
 - `animations`: Transition and animation specs
 - `responsiveBreakpoints`: Breakpoint values and adaptation notes
 
-## Output (v2 artefact contributions)
+## Output (artefact contributions)
 
-When `ARTEFACT_SCHEMA=v2` is active (default since v2.7), in addition to your legacy design file (see role rules), ALSO write your specialisation's contribution to:
+Write your specialisation's contribution to:
 
 - `.pipeline/graphics-designer-spec.md` — colour scheme, typography hierarchy, spacing scale, component visual specs (with CSS snippets), icon descriptions, animation specs, responsive breakpoint adaptations. This is "what it looks like" content; it merges into the workspace `spec.md`. Use plain markdown — the orchestrator concatenates per-designer files under a `## graphics-designer` heading.
-
-If you cannot write the v2 contribution (tool failure, etc.), still produce the legacy design file — the orchestrator will derive `spec.md` from `DESIGN.md` as a fallback.
 
 ## Constraints
 

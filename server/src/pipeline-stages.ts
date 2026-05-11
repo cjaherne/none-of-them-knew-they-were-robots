@@ -52,14 +52,10 @@ export const GAME_ART_STAGE: StageDefinition = { name: "game-art", agent: "game-
 export const RELEASE_STAGE: StageDefinition = { name: "release", agent: "release", category: "release" };
 
 /**
- * Spec-kit Tier 2 PR2/PR3 — discrete Overseer sub-stages. Inserted into the
- * pipeline by `injectV2OverseerStages()` when `ARTEFACT_SCHEMA=v2`. Each is a
- * single-stage group dispatched by category in the orchestrator. The agent
- * field is `"bigboss"` because the underlying review is a BigBoss skill-pack
- * call (same as the existing inline overseer blocks).
- *
- * `CHECKLIST_STAGE` is declared here for symmetry but is NOT inserted by the
- * helper until PR3 — PR2 only wires `clarify` and `analyze`.
+ * Discrete Overseer sub-stages — inserted into the pipeline unconditionally by
+ * `injectV2OverseerStages()`. Each is a single-stage group dispatched by
+ * category in the orchestrator. The agent field is `"bigboss"` because the
+ * underlying review is a BigBoss skill-pack call.
  */
 export const CLARIFY_STAGE: StageDefinition = { name: "clarify", agent: "bigboss", category: "clarify" };
 export const ANALYZE_STAGE: StageDefinition = { name: "analyze", agent: "bigboss", category: "analyze" };
@@ -231,13 +227,13 @@ export function injectPostDesignGameArt(stages: StageDefinition[]): StageDefinit
 }
 
 /**
- * Spec-kit Tier 2 PR2/PR3 — insert the named Overseer sub-stages into a stage list.
+ * Insert the named Overseer sub-stages into a stage list.
  *
  * - `CLARIFY_STAGE`   inserted immediately after the **last** design stage so
- *                     it sees the merged `spec.md` / `plan.md` / `DESIGN.md` shim.
+ *                     it sees the merged `spec.md` / `plan.md`.
  * - `ANALYZE_STAGE`   inserted immediately after the **last** coding stage so
  *                     it sees the implementation diff and any `CODING_NOTES.md`.
- * - `CHECKLIST_STAGE` (PR3) inserted immediately after `ANALYZE_STAGE` so it
+ * - `CHECKLIST_STAGE` inserted immediately after `ANALYZE_STAGE` so it
  *                     reads `CHECKLISTS.md` post-analyze and can hand off to a
  *                     single coding fix-up before validation runs.
  *

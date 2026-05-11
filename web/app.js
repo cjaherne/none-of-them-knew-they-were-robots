@@ -19,12 +19,12 @@ function speak(text) {
 
 /**
  * Whitelist of artefact tabs displayed in the Artefacts panel. Order is
- * surface order (Spec → Plan → Tasks → Checklists → Constitution), with the
- * legacy DESIGN.md / REQUIREMENTS.md kept for v1 tasks. The `file` value
- * MUST match the server-side ARTEFACT_WHITELIST in server/src/server.ts —
- * a missing entry on either side will surface as a 400 in dev.
+ * surface order (Spec → Plan → Tasks → Checklists → Constitution → Requirements).
+ * The `file` value MUST match the server-side ARTEFACT_WHITELIST in
+ * server/src/artefact-endpoint.ts — a missing entry on either side will surface
+ * as a 400 in dev.
  *
- * The `triggerCategory` field tells the SSE handler which stage category's
+ * The `triggers` field tells the SSE handler which stage category's
  * "succeeded" event should auto-refresh that artefact (so the user sees the
  * file appear without having to click Refresh). Multiple categories may
  * trigger the same artefact (e.g. spec.md is updated by both design merges
@@ -37,7 +37,6 @@ const ARTEFACT_TABS = [
   { file: "CHECKLISTS.md",    label: "Checklists",    triggers: ["design", "checklist"] },
   { file: "constitution.md",  label: "Constitution",  triggers: [] },
   { file: "REQUIREMENTS.md",  label: "Requirements",  triggers: ["requirements"] },
-  { file: "DESIGN.md",        label: "Design (v1)",   triggers: ["design"] },
 ];
 
 const artefactState = {

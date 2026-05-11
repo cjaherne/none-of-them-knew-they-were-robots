@@ -2,12 +2,12 @@
  * Generates TASKS.md — a spec-kit-style ordered, dependency-aware task list with
  * `[P]` parallel markers and target file paths. Written by the orchestrator after
  * design merge but before the coding stage; read by coding/lua-coding agents as
- * an executable plan that complements REQUIREMENTS.md (atomic items) and DESIGN.md
- * (architecture).
+ * an executable plan that complements REQUIREMENTS.md (atomic items), spec.md
+ * (what + why), and plan.md (architecture / how).
  *
- * Tier 1: TASKS.md is generated from BigBoss's planned stages + the merged
- * DESIGN.md + REQUIREMENTS.md (when available). Coding agents read it but are
- * not yet required to tick `[X]` markers — that is Tier 2 PR2 territory.
+ * TASKS.md is generated from BigBoss's planned stages + spec.md + plan.md +
+ * REQUIREMENTS.md (when available). Coding agents read it but are not yet
+ * required to tick `[X]` markers.
  */
 import { promises as fs } from "fs";
 import * as path from "path";
@@ -39,7 +39,7 @@ function header(): string {
   return [
     "# Tasks",
     "",
-    "Executable task list derived from the BigBoss pipeline plan, DESIGN.md, and",
+    "Executable task list derived from the BigBoss pipeline plan, spec.md, plan.md, and",
     "REQUIREMENTS.md. Mark `[X]` when complete. `[P]` = safe to run in parallel",
     "with siblings in the same phase. Each row may reference repo-relative paths",
     "and REQUIREMENTS.md ids (e.g. R1, R3).",
@@ -88,26 +88,26 @@ function fallbackTasksFromStages(stages: StageDefinition[], stack: PipelineStack
     if (designStages.length === 1) {
       tasks.push({
         id: `T${id++}`,
-        text: `Run ${designStages[0].agent} to produce DESIGN.md.`,
+        text: `Run ${designStages[0].agent} to produce spec.md and plan.md.`,
         parallel: false,
-        paths: ["DESIGN.md"],
+        paths: ["spec.md", "plan.md"],
         phase,
       });
     } else {
       for (const s of designStages) {
         tasks.push({
           id: `T${id++}`,
-          text: `${s.agent}: contribute to the merged design.`,
+          text: `${s.agent}: contribute to spec.md / plan.md.`,
           parallel: true,
-          paths: [`.pipeline/${s.agent}-design.md`],
+          paths: [`.pipeline/${s.agent}-spec.md`, `.pipeline/${s.agent}-plan.md`],
           phase,
         });
       }
       tasks.push({
         id: `T${id++}`,
-        text: "Merge per-designer outputs into DESIGN.md.",
+        text: "Merge per-designer contributions into spec.md and plan.md.",
         parallel: false,
-        paths: ["DESIGN.md"],
+        paths: ["spec.md", "plan.md"],
         phase,
       });
     }
@@ -121,8 +121,8 @@ function fallbackTasksFromStages(stages: StageDefinition[], stack: PipelineStack
         id: `T${id++}`,
         text:
           stack === "love"
-            ? `Run ${s.agent} to implement the LÖVE game per DESIGN.md (locomotion before polish).`
-            : `Run ${s.agent} to implement features per DESIGN.md.`,
+            ? `Run ${s.agent} to implement the LÖVE game per spec.md / plan.md (locomotion before polish).`
+            : `Run ${s.agent} to implement features per spec.md / plan.md.`,
         parallel: false,
         paths: stack === "love" ? ["main.lua", "conf.lua", "src/"] : undefined,
         phase,
@@ -176,9 +176,10 @@ async function extractTasksWithOpenAI(
 ): Promise<ExtractedTask[] | null> {
   if (!process.env.OPENAI_API_KEY) return null;
   const log = createLogger("tasks");
-  const designSlice = await readSlice(workDir, "DESIGN.md", 16000);
-  if (!designSlice.trim()) {
-    log.info("No DESIGN.md content yet; using stage-derived fallback", undefined, "flow");
+  const specSlice = await readSlice(workDir, "spec.md", 8000);
+  const planSlice = await readSlice(workDir, "plan.md", 8000);
+  if (!specSlice.trim() && !planSlice.trim()) {
+    log.info("No spec.md or plan.md content yet; using stage-derived fallback", undefined, "flow");
     return null;
   }
   const requirementsSlice = await readSlice(workDir, "REQUIREMENTS.md", 4000);
@@ -206,8 +207,13 @@ Rules:
     const userParts: string[] = [
       `## Original task\n${originalTask.slice(0, 4000)}`,
       `## Pipeline stages (BigBoss plan)\n${stageSummary}`,
-      `## DESIGN.md (excerpt)\n${designSlice}`,
     ];
+    if (specSlice.trim()) {
+      userParts.push(`## spec.md (excerpt)\n${specSlice}`);
+    }
+    if (planSlice.trim()) {
+      userParts.push(`## plan.md (excerpt)\n${planSlice}`);
+    }
     if (requirementsSlice.trim()) {
       userParts.push(`## REQUIREMENTS.md (excerpt)\n${requirementsSlice}`);
     }
@@ -257,7 +263,7 @@ Rules:
 }
 
 /**
- * Write `<workDir>/TASKS.md` from BigBoss's planned stages, the merged DESIGN.md,
+ * Write `<workDir>/TASKS.md` from BigBoss's planned stages, spec.md, plan.md,
  * and REQUIREMENTS.md (when available). Always writes a file; uses an OpenAI
  * extraction when API key is set, otherwise falls back to a stage-derived skeleton.
  */

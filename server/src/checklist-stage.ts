@@ -1,16 +1,15 @@
 /**
- * Spec-kit Tier 2 PR3 — `checklist` stage runner.
+ * `checklist` stage runner.
  *
- * Replaces the LÖVE-only `LOVE_SMOKE_CHECKLIST=1` env behaviour with a
- * stack-agnostic, read-only review pass that consumes `CHECKLISTS.md`
- * (written by PR1's `writeChecklistsMd`) and emits a structured
+ * A stack-agnostic, read-only review pass that consumes `CHECKLISTS.md`
+ * (written by `writeChecklistsMd`) and emits a structured
  * `ChecklistStageResult`.
  *
  * Behaviour:
  *   1. Read CHECKLISTS.md. If missing or empty → noop (orchestrator
  *      advances to validation).
  *   2. Run a single OpenAI pass seeded with the checklist + workspace
- *      context (file tree, key source files, spec.md/plan.md/REQUIREMENTS.md
+ *      context (file tree, key source files, spec.md / plan.md / REQUIREMENTS.md
  *      previews) asking the model to tick each unchecked item as
  *      pass/fail/unknown.
  *   3. Apply the ticks to CHECKLISTS.md via PR1's `tickChecklistItems`.
@@ -139,7 +138,13 @@ async function runChecklistOpenAI(
   try {
     specSlice = (await fs.readFile(path.join(workDir, "spec.md"), "utf-8")).slice(0, 8000);
   } catch {
-    /* spec.md may not exist (v1 task); fall back to DESIGN.md preview from buildContextBrief */
+    /* spec.md may not exist yet */
+  }
+  let planSlice = "";
+  try {
+    planSlice = (await fs.readFile(path.join(workDir, "plan.md"), "utf-8")).slice(0, 8000);
+  } catch {
+    /* plan.md may not exist yet */
   }
   let requirementsSlice = "";
   try {
@@ -178,6 +183,7 @@ Respond with JSON only:
       `## CHECKLISTS.md\n${checklistContent.slice(0, 12000)}`,
     ];
     if (specSlice.trim()) userParts.push(`## spec.md (preview)\n${specSlice}`);
+    if (planSlice.trim()) userParts.push(`## plan.md (preview)\n${planSlice}`);
     if (requirementsSlice.trim()) userParts.push(`## REQUIREMENTS.md (preview)\n${requirementsSlice}`);
     userParts.push(`## File tree\n\`\`\`\n${fileTree}\n\`\`\``);
     userParts.push(`## Key source files\n${sourceFiles}`);

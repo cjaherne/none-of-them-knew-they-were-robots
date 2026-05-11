@@ -64,7 +64,8 @@ function heuristicPurpose(filePath: string, firstLines: string): string {
   if (base === "package.json") return "Node.js project configuration and dependencies";
   if (base === "tsconfig.json") return "TypeScript compiler configuration";
   if (base === "README.md") return "Project documentation";
-  if (base === "DESIGN.md") return "Design document for the current feature";
+  if (base === "spec.md") return "Specification for the current feature (what + why)";
+  if (base === "plan.md") return "Architecture and implementation plan for the current feature (how)";
   if (base === "main.lua") return "LÖVE2D entry point (love.load, love.update, love.draw)";
   if (base === "conf.lua") return "LÖVE2D window and project configuration";
   if (base.endsWith("_spec.lua")) return `Busted test spec for ${base.replace(/_spec\.lua$/, ".lua")}`;

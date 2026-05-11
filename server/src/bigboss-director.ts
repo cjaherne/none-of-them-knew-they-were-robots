@@ -468,7 +468,7 @@ export async function overseerPostDesignReview(
   const skillBlock = skillContextBlock(skillsRoot);
   const stack = options?.stack ?? "web";
 
-  const agentPrompt = `Review the DESIGN.md in this workspace against the original user task below.\n\n## Original task\n\n${originalTask}`;
+  const agentPrompt = `Review spec.md and plan.md in this workspace against the original user task below.\n\n## Original task\n\n${originalTask}`;
   try {
     const config: AgentRunConfig = {
       agentType: "bigboss",
@@ -499,19 +499,31 @@ export async function overseerPostDesignReview(
 
   if (!process.env.OPENAI_API_KEY) return null;
   try {
-    const designContent = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
-    const designSlice = designContent.slice(0, 32000);
+    let specContent = "";
+    let planContent = "";
+    try { specContent = await fs.readFile(path.join(workDir, "spec.md"), "utf-8"); } catch { /* may not exist */ }
+    try { planContent = await fs.readFile(path.join(workDir, "plan.md"), "utf-8"); } catch { /* may not exist */ }
+    if (!specContent.trim() && !planContent.trim()) {
+      log.warn("Overseer post-design review (API fallback): no spec.md/plan.md on disk", undefined, "flow");
+      return null;
+    }
+    const cap = 16000;
+    const specSlice = specContent.slice(0, cap);
+    const planSlice = planContent.slice(0, cap);
     const { default: OpenAI } = await import("openai");
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const model = getBigBossModel();
     const loveBlock = stack === "love" ? `\n\n${OVERSEER_LOVE_DESIGN_CHECKLIST}\n` : "";
-    const systemContent = `${skillBlock}You are BigBoss in Overseer mode. Review the design document against the user's original task. Decide if the design covers every requirement from the Original task section.${loveBlock}
+    const systemContent = `${skillBlock}You are BigBoss in Overseer mode. Review spec.md (what + why) and plan.md (how / architecture) against the user's original task. Decide if they together cover every requirement from the Original task section.${loveBlock}
 Respond with JSON only: { "fit": "ok" | "gaps", "gaps": ["gap1", "gap2"] (if fit is gaps), "gapsByAgent": { "agent-type": "instructions for that designer only" } (optional — use keys: game-designer, love-architect, love-ux for LÖVE parallel designs, or ux-designer, core-code-designer, graphics-designer for web; only include agents whose section must change), "suggestedSubTask": { "prompt": "shared instructions when gaps span multiple roles" } (optional) }. Be concise.`;
+    const userParts = [`## Original task\n\n${originalTask.slice(0, 8000)}`];
+    if (specSlice.trim()) userParts.push(`## spec.md\n\n${specSlice}`);
+    if (planSlice.trim()) userParts.push(`## plan.md\n\n${planSlice}`);
     const response = await client.chat.completions.create({
       model,
       messages: [
         { role: "system", content: systemContent },
-        { role: "user", content: `## Original task\n\n${originalTask.slice(0, 8000)}\n\n## Design document\n\n${designSlice}` },
+        { role: "user", content: userParts.join("\n\n") },
       ],
       max_tokens: 2048,
       temperature: 0.2,
@@ -541,7 +553,7 @@ export async function overseerPostCodeReview(
   const skillBlock = skillContextBlock(skillsRoot);
   const stack = options?.stack ?? "web";
 
-  const agentPrompt = `Review the implementation in this workspace against the original user task, DESIGN.md, and REQUIREMENTS.md if present. Flag drift if the user asked for cross-session or persistent scores but the code only keeps scores in RAM without love.filesystem (or equivalent) unless README scopes session-only.\n\n## Original task\n\n${originalTask}`;
+  const agentPrompt = `Review the implementation in this workspace against the original user task, spec.md, plan.md, and REQUIREMENTS.md if present. Flag drift if the user asked for cross-session or persistent scores but the code only keeps scores in RAM without love.filesystem (or equivalent) unless README scopes session-only.\n\n## Original task\n\n${originalTask}`;
   try {
     const config: AgentRunConfig = {
       agentType: "bigboss",
@@ -572,8 +584,12 @@ export async function overseerPostCodeReview(
 
   if (!process.env.OPENAI_API_KEY) return null;
   try {
-    const designContent = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
-    const designSlice = designContent.slice(0, 32000);
+    let specContent = "";
+    let planContent = "";
+    try { specContent = await fs.readFile(path.join(workDir, "spec.md"), "utf-8"); } catch { /* may not exist */ }
+    try { planContent = await fs.readFile(path.join(workDir, "plan.md"), "utf-8"); } catch { /* may not exist */ }
+    const specSlice = specContent.slice(0, 12000);
+    const planSlice = planContent.slice(0, 12000);
     const brief = buildContextBrief("code-review", workDir);
     const fileTree = brief.fileTree || "(no file tree)";
     const sourceFiles = brief.architecturalFiles || "(no source files read)";
@@ -593,16 +609,20 @@ export async function overseerPostCodeReview(
     const persistenceBlock = `
 **Cross-session scores / persistence:** If the user asked for scores or stats across launches, sessions, or "since installing" (not only the current run), require durable persistence (e.g. LÖVE: love.filesystem read/write). Flag **drift** when implementation keeps scores only in memory with no load/save path, unless README or CODING_NOTES.md clearly scopes "session only" and that matches the user's ask.
 `;
-    const systemContent = `${skillBlock}You are BigBoss in Overseer mode. Review implementation against the design and original task. You receive the design document, a file tree, AND the actual content of key source files. Verify that each requirement from the Original task is implemented in the source code, not just that a file exists. If REQUIREMENTS.md exists on disk, use it as the checklist for numbered items.${loveBlock}${persistenceBlock}
+    const systemContent = `${skillBlock}You are BigBoss in Overseer mode. Review implementation against spec.md, plan.md, and the original task. You receive spec.md (what + why), plan.md (how / architecture), a file tree, AND the actual content of key source files. Verify that each requirement from the Original task is implemented in the source code, not just that a file exists. If REQUIREMENTS.md exists on disk, use it as the checklist for numbered items.${loveBlock}${persistenceBlock}
 Respond with JSON only: { "fit": "ok" | "drift", "missingOrWrong": ["item1", "item2"] (if fit is drift), "focusPaths": ["src/foo.lua", "main.lua"] (optional; repo-relative files/dirs to change first), "suggestedSubTask": { "prompt": "focused instructions for the coder to add or fix these items" } (optional, if fit is drift) }. Be concise.`;
+    const userParts = [`## Original task\n\n${originalTask.slice(0, 8000)}`];
+    if (specSlice.trim()) userParts.push(`## spec.md\n\n${specSlice}`);
+    if (planSlice.trim()) userParts.push(`## plan.md\n\n${planSlice}`);
+    userParts.push(`## File tree\n\`\`\`\n${fileTree}\n\`\`\``);
+    userParts.push(`## Key source files\n${sourceFiles}`);
+    if (codingNotes) userParts.push(`## CODING_NOTES.md\n${codingNotes}`);
+
     const response = await client.chat.completions.create({
       model,
       messages: [
         { role: "system", content: systemContent },
-        {
-          role: "user",
-          content: `## Original task\n\n${originalTask.slice(0, 8000)}\n\n## Design\n\n${designSlice.slice(0, 12000)}\n\n## File tree\n\`\`\`\n${fileTree}\n\`\`\`\n\n## Key source files\n${sourceFiles}${codingNotes ? `\n\n## CODING_NOTES.md\n${codingNotes}` : ""}`,
-        },
+        { role: "user", content: userParts.join("\n\n") },
       ],
       max_tokens: 2048,
       temperature: 0.2,

@@ -7,7 +7,7 @@
     "start": "tsx src/server.ts",
     "build": "tsc",
     "clean": "rimraf dist",
-    "test": "node --import tsx --test test/artefact-schema.test.ts test/pipeline-stages.test.ts test/checklist-stage.test.ts test/artefact-endpoint.test.ts"
+    "test": "node --import tsx --test test/pipeline-stages.test.ts test/checklist-stage.test.ts test/artefact-endpoint.test.ts"
   },
   "dependencies": {
     "@agents/shared": "*",

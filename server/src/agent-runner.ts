@@ -9,7 +9,6 @@ import { loadBigBossSystemPromptSync } from "./bigboss-prompt-loader";
 import { OVERSEER_LOVE_CODE_CHECKLIST, OVERSEER_LOVE_DESIGN_CHECKLIST } from "./overseer-love-checklists";
 import { getCursorAgentSessionsMode } from "./cursor-session-policy";
 import { formatConstitutionForPrompt } from "./constitution-artifact";
-import { isArtefactSchemaV2 } from "./artefact-schema";
 
 const log = createLogger("agent-runner");
 
@@ -142,7 +141,7 @@ export interface AgentRunConfig {
   upstreamResults?: AgentRunResult[];
   /** Per-agent context brief from BigBoss context broker */
   agentBrief?: string | null;
-  /** When true, design agents write to .pipeline/<agentType>-design.md instead of DESIGN.md */
+  /** When true, design agents write per-artefact contributions under .pipeline/<agentType>-spec.md and .pipeline/<agentType>-plan.md (no direct write to root spec.md/plan.md). */
   parallelDesign?: boolean;
   /** Task complexity from BigBoss ("trivial" | "moderate" | "complex") */
   complexity?: "trivial" | "moderate" | "complex";
@@ -277,16 +276,19 @@ source files. USE THIS CONTEXT to produce an informed, specific design.
 
 Your job:
 1. Analyse the user's request AND the provided codebase context.
-2. Write the design to a file called DESIGN.md in the workspace root.
-3. The design document should include:
+2. Write your specialisation's per-artefact contributions:
+   - .pipeline/AGENT_TYPE-spec.md (what + why content; user-facing requirements, scope, acceptance criteria)
+   - .pipeline/AGENT_TYPE-plan.md (how / architecture content; file layout, data models, dependencies, implementation notes for the Coding Agent)
+   The orchestrator merges these per-designer files into the workspace's root spec.md and plan.md.
+3. Your spec/plan contributions should collectively cover:
    - High-level architecture and approach
    - File/directory structure for the implementation
    - Key data models, interfaces, or schemas
    - Component breakdown with responsibilities
    - Dependencies and technology choices with rationale
    - Any important implementation notes for the Coding Agent
-4. Be specific and actionable -- the Coding Agent will use this document
-   as its sole blueprint. Include code snippets or pseudocode where helpful.
+4. Be specific and actionable -- the Coding Agent will use the merged spec.md
+   and plan.md as its blueprint. Include code snippets or pseudocode where helpful.
 
 If the workspace already contains source files (shown in the Workspace File Tree),
 your design MUST BUILD ON the existing codebase. Reference existing files by name.
@@ -294,7 +296,8 @@ Describe what should be added or modified. Only propose new files for genuinely
 new functionality. Match existing code style and patterns.
 
 DO NOT create any implementation files (no .js, .ts, .html, .css, etc.).
-ONLY produce the DESIGN.md file.
+Produce only the .pipeline/AGENT_TYPE-spec.md and .pipeline/AGENT_TYPE-plan.md files
+(plus any handoff notes your skill pack specifies).
 `.trim();
 
 const PREAMBLE_DESIGN_PARALLEL = `
@@ -308,25 +311,24 @@ source files. USE THIS CONTEXT to produce an informed, specific design.
 
 Your job:
 1. Analyse the user's request AND the provided codebase context.
-2. Write your design to: .pipeline/AGENT_TYPE-design.md
+2. Write your specialisation's per-artefact contributions:
+   - .pipeline/AGENT_TYPE-spec.md (what + why content; scope, requirements, acceptance criteria)
+   - .pipeline/AGENT_TYPE-plan.md (how / architecture content; file layout, data models, dependencies, implementation notes)
    (where AGENT_TYPE is your agent name, provided in the prompt below).
-   DO NOT write to DESIGN.md -- the orchestrator will merge all parallel designs.
-3. **ARTEFACT_SCHEMA=v2 (default since v2.7):** in addition to the design file
-   above, ALSO write your specialisation's per-artefact contribution as
-   directed by your skill pack. Most designers also write
-   .pipeline/AGENT_TYPE-spec.md (what + why content) and/or
-   .pipeline/AGENT_TYPE-plan.md (how / architecture content); see your
-   "Output (v2 artefact contributions)" section. The orchestrator merges
-   these per-designer files into the workspace's spec.md / plan.md.
-4. The design document should include:
-   - High-level architecture and approach (from your specialization's perspective)
+   DO NOT write directly to spec.md or plan.md -- the orchestrator merges all
+   parallel designers' contributions into the workspace's root spec.md / plan.md.
+   See your skill pack's "Output (artefact contributions)" section for any
+   specialisation-specific guidance.
+3. Your spec/plan contributions should collectively cover (from your
+   specialisation's perspective):
+   - High-level architecture and approach
    - File/directory structure for the implementation
    - Key data models, interfaces, or schemas
    - Component breakdown with responsibilities
    - Dependencies and technology choices with rationale
    - Any important implementation notes for the Coding Agent
-5. Be specific and actionable -- the Coding Agent will use the merged document
-   as its sole blueprint. Include code snippets or pseudocode where helpful.
+4. Be specific and actionable -- the Coding Agent will use the merged spec.md
+   and plan.md as its blueprint. Include code snippets or pseudocode where helpful.
 
 If the workspace already contains source files (shown in the Workspace File Tree),
 your design MUST BUILD ON the existing codebase. Reference existing files by name.
@@ -338,43 +340,44 @@ DO NOT create any implementation files (no .js, .ts, .html, .css, etc.).
 
 const PREAMBLE_CODING = `
 You are running as a local CLI agent with full file-system access.
-Your role in this pipeline is IMPLEMENTATION -- you receive a design document
-and must build it.
+Your role in this pipeline is IMPLEMENTATION -- you receive a spec + plan and
+must build it.
 
-A PREVIEW of DESIGN.md is included below for quick orientation. However, the
-preview may be truncated. Use your filesystem tool to READ the full DESIGN.md
-from the workspace root before you start implementing. The full document on
-disk is the authoritative source.
+PREVIEWS of spec.md and plan.md are included below for quick orientation.
+However, the previews may be truncated. Use your filesystem tool to READ the
+full spec.md and plan.md from the workspace root before you start implementing.
+The full documents on disk are the authoritative source.
 
-DESIGN.md begins with an "Original task (source of truth)" section: that is
+spec.md begins with an "Original task (source of truth)" section: that is
 the user's full requirement list. If REQUIREMENTS.md exists in the workspace root,
 read it and implement or explicitly defer each numbered item in CODING_NOTES.md.
-If the rest of DESIGN.md omits a requirement from the Original task (e.g. top-down view, character selection, split screen),
-you MUST implement it from the Original task and note the addition in CODING_NOTES.md.
+If the rest of spec.md / plan.md omits a requirement from the Original task
+(e.g. top-down view, character selection, split screen), you MUST implement it
+from the Original task and note the addition in CODING_NOTES.md.
 
 Upstream agent handoff files are in .pipeline/*.handoff.md -- read them with
 your filesystem tool if you need additional context from prior stages.
 
 Your job:
-1. READ the full DESIGN.md from disk using your filesystem tool.
+1. READ the full spec.md and plan.md from disk using your filesystem tool.
 2. If REQUIREMENTS.md exists, READ it and map every requirement id to implementation or documented deferral.
-3. Read the "Original task" section carefully, sentence by sentence.
-4. Implement the full application as specified in the design and the Original task.
+3. Read the "Original task" section in spec.md carefully, sentence by sentence.
+4. Implement the full application as specified in spec.md / plan.md and the Original task.
 5. Use your file-write tools to create every file on disk.
 6. Use your shell tool to run setup commands (npm init, install deps, etc.).
 7. Create a complete, working implementation -- not a description of one.
-8. Follow the file structure and patterns from the design document.
+8. Follow the file structure and patterns from plan.md.
 9. When you are done, every file should exist on disk in the workspace.
-10. If you encounter issues with the design (contradictions, infeasible approaches,
+10. If you encounter issues with the spec/plan (contradictions, infeasible approaches,
    missing specifications, or areas where you deviated), document them in a file
    called CODING_NOTES.md in the workspace root. Structure it with these sections:
-   ## Deviations   (where you diverged from the design and why)
-   ## Issues Found  (problems in the design that should be flagged)
+   ## Deviations   (where you diverged from the spec/plan and why)
+   ## Issues Found  (problems in the spec/plan that should be flagged)
    ## Suggestions   (improvements for future design iterations)
    Only create this file if you actually have notes to record.
 
 BEFORE YOU FINISH -- self-verification checklist:
-- Re-read REQUIREMENTS.md (if present) and the "Original task" section from DESIGN.md; tick off every requirement.
+- Re-read REQUIREMENTS.md (if present) and the "Original task" section from spec.md; tick off every requirement.
 - For each file you created, verify it has no syntax errors.
 - For Lua/LÖVE projects: verify main.lua has love.load, love.update, and love.draw callbacks.
 - For Node/web projects: verify the project builds (npm run build or equivalent).
@@ -388,12 +391,13 @@ You are running as a local CLI agent with full file-system access.
 Your role in this pipeline is TESTING -- you receive implemented code and
 must validate it.
 
-A preview of DESIGN.md and upstream context is included below for orientation.
-For the full design, READ DESIGN.md from the workspace root using your
-filesystem tool. Upstream handoff files are in .pipeline/*.handoff.md.
+Previews of spec.md and plan.md plus upstream context are included below for
+orientation. For the full spec/plan, READ spec.md and plan.md from the
+workspace root using your filesystem tool. Upstream handoff files are in
+.pipeline/*.handoff.md.
 
 Your job:
-1. Read the full DESIGN.md from disk to understand what was designed.
+1. Read the full spec.md and plan.md from disk to understand what was specified.
 2. Examine the source files in the workspace to understand what was built.
 3. Create test files using an appropriate testing framework.
 4. Use your shell tool to install test dependencies and run the tests.
@@ -409,8 +413,9 @@ const PREAMBLE_LOVE_TESTING = `
 You are running as a local CLI agent with full file-system access.
 Your role in this pipeline is TESTING for a LÖVE2D / Lua project.
 
-A preview of DESIGN.md and upstream context is included below. READ the full
-DESIGN.md from the workspace root. Upstream handoff files are in .pipeline/*.handoff.md.
+Previews of spec.md and plan.md plus upstream context are included below.
+READ the full spec.md and plan.md from the workspace root. Upstream handoff
+files are in .pipeline/*.handoff.md.
 
 Your job:
 1. Prefer **busted** for pure Lua modules (game logic, utilities): add spec files
@@ -433,7 +438,7 @@ workspace root listing every file path, intended use in-game, and a note that im
 full DALL-E resolution (typically 1024px) — the coder should scale with love.graphics.draw
 or equivalent.
 
-1. READ full **DESIGN.md** and **REQUIREMENTS.md** from disk (previews below may truncate).
+1. READ full **spec.md**, **plan.md**, and **REQUIREMENTS.md** from disk (previews below may truncate).
 2. READ upstream **.pipeline/*.handoff.md** from designers for art-relevant hints.
 3. Create **assets/sprites/** (or similar) and generate coherent pixel-style sprites
    (characters, projectiles, key UI icons if specified). Use consistent palette cues in prompts.
@@ -466,14 +471,14 @@ The BASE_BRANCH and pipeline branch are in the task context below. Never force-p
 
 const PREAMBLE_DESIGN_REVIEW = `
 You are running as the BigBoss Overseer agent with full file-system access.
-Your role is DESIGN REVIEW -- compare the design document against the original
-user task and identify any gaps or missing requirements.
+Your role is DESIGN REVIEW -- compare the spec.md and plan.md against the
+original user task and identify any gaps or missing requirements.
 
 Your job:
-1. Read DESIGN.md in full from the workspace using your filesystem tool.
-2. The "Original task (source of truth)" section at the top of DESIGN.md
+1. Read spec.md and plan.md in full from the workspace using your filesystem tool.
+2. The "Original task (source of truth)" section at the top of spec.md
    contains every requirement the user stated. Go through it sentence by sentence.
-3. For each requirement, check that the design document addresses it with
+3. For each requirement, check that the spec/plan addresses it with
    a concrete design element (not just a passing mention).
 4. For games: verify visual perspective, player count, character selection,
    game modes, screen layout, input methods, and sound requirements.
@@ -494,11 +499,11 @@ Your role is CODE REVIEW -- compare the implemented code against the original
 user task and design document to identify drift or missing features.
 
 Your job:
-1. Read DESIGN.md in full from the workspace using your filesystem tool.
+1. Read spec.md and plan.md in full from the workspace using your filesystem tool.
 2. Read ALL source files in the workspace (not just the file tree -- actually
    open and read the contents of main.lua, conf.lua, every file in src/, etc.).
    You must verify what was actually implemented, not assume from filenames.
-3. The "Original task (source of truth)" section in DESIGN.md contains the
+3. The "Original task (source of truth)" section in spec.md contains the
    user's full requirement list. Verify each requirement is implemented in code.
 4. For games: check that love.load/love.update/love.draw exist and contain
    the expected logic, that scenes listed in the design have corresponding files,
@@ -667,8 +672,12 @@ function getArchitecturalFiles(workDir: string, maxTotal = 10000): string | null
   return sections.length > 0 ? sections.join("\n\n") : null;
 }
 
-function getDesignDoc(workDir: string, maxChars = 8000): string | null {
-  return readFileSafe(path.join(workDir, "DESIGN.md"), maxChars);
+function getSpecMd(workDir: string, maxChars = 8000): string | null {
+  return readFileSafe(path.join(workDir, "spec.md"), maxChars);
+}
+
+function getPlanMd(workDir: string, maxChars = 8000): string | null {
+  return readFileSafe(path.join(workDir, "plan.md"), maxChars);
 }
 
 function getHandoffContent(workDir: string, agentType: string, maxChars = 4000): string | null {
@@ -714,7 +723,8 @@ export interface ContextBrief {
   gitDiff: string | null;
   projectFiles: string | null;
   architecturalFiles: string | null;
-  designDoc: string | null;
+  specMd: string | null;
+  planMd: string | null;
   handoffContent: Record<string, string>;
   testPatterns: string | null;
   packageScripts: string | null;
@@ -737,7 +747,8 @@ export function buildContextBrief(
     gitDiff: null,
     projectFiles: null,
     architecturalFiles: null,
-    designDoc: null,
+    specMd: null,
+    planMd: null,
     handoffContent: {},
     testPatterns: null,
     packageScripts: null,
@@ -759,12 +770,15 @@ export function buildContextBrief(
       brief.gitDiff = getGitDiffStat(workDir, baseBranch);
       brief.projectFiles = getProjectFiles(workDir, 2000);
       brief.architecturalFiles = getArchitecturalFiles(workDir, 8000);
-      brief.designDoc = getDesignDoc(workDir);
+      brief.specMd = getSpecMd(workDir);
+      brief.planMd = getPlanMd(workDir);
       break;
 
-    case "coding":
+    case "coding": {
+      const cap = agentType === "lua-coding" ? 24000 : 12000;
       brief.fileTree = getFileTree(workDir);
-      brief.designDoc = getDesignDoc(workDir, agentType === "lua-coding" ? 24000 : 12000);
+      brief.specMd = getSpecMd(workDir, cap);
+      brief.planMd = getPlanMd(workDir, cap);
       brief.projectFiles = getProjectFiles(workDir, 1500);
       if (upstreamResults) {
         for (const r of upstreamResults) {
@@ -773,10 +787,12 @@ export function buildContextBrief(
         }
       }
       break;
+    }
 
     case "game-art":
       brief.fileTree = getFileTree(workDir);
-      brief.designDoc = getDesignDoc(workDir, 24000);
+      brief.specMd = getSpecMd(workDir, 24000);
+      brief.planMd = getPlanMd(workDir, 24000);
       brief.projectFiles = getProjectFiles(workDir, 1500);
       if (upstreamResults) {
         for (const r of upstreamResults) {
@@ -786,14 +802,13 @@ export function buildContextBrief(
       }
       break;
 
-    case "validation":
+    case "validation": {
+      const cap = upstreamResults?.some((r) => r.agent === "lua-coding" || r.agent === "love-testing") || agentType === "love-testing"
+        ? 24000
+        : 6000;
       brief.fileTree = getFileTree(workDir);
-      brief.designDoc = getDesignDoc(
-        workDir,
-        upstreamResults?.some((r) => r.agent === "lua-coding" || r.agent === "love-testing") || agentType === "love-testing"
-          ? 24000
-          : 6000,
-      );
+      brief.specMd = getSpecMd(workDir, cap);
+      brief.planMd = getPlanMd(workDir, cap);
       brief.testPatterns = getTestPatterns(workDir);
       brief.packageScripts = getPackageScripts(workDir);
       if (upstreamResults) {
@@ -803,15 +818,18 @@ export function buildContextBrief(
         }
       }
       break;
+    }
 
     case "design-review":
       brief.fileTree = getFileTree(workDir);
-      brief.designDoc = getDesignDoc(workDir, 32000);
+      brief.specMd = getSpecMd(workDir, 32000);
+      brief.planMd = getPlanMd(workDir, 32000);
       break;
 
     case "code-review":
       brief.fileTree = getFileTree(workDir);
-      brief.designDoc = getDesignDoc(workDir, 32000);
+      brief.specMd = getSpecMd(workDir, 32000);
+      brief.planMd = getPlanMd(workDir, 32000);
       brief.architecturalFiles = getArchitecturalFiles(workDir, 12000);
       break;
   }
@@ -859,7 +877,8 @@ function buildFullPrompt(
   parts.push(preamble);
   if (config.parallelDesign && config.category === "design") {
     parts.push(`\nYour agent type is: ${config.agentType}`);
-    parts.push(`Write your design output to: .pipeline/${config.agentType}-design.md`);
+    parts.push(`Write your spec contribution to: .pipeline/${config.agentType}-spec.md`);
+    parts.push(`Write your plan contribution to: .pipeline/${config.agentType}-plan.md`);
   }
   parts.push("");
 
@@ -912,73 +931,42 @@ function buildFullPrompt(
   const useDiskBasedContext =
     config.category === "coding" || config.category === "validation" || config.category === "game-art";
 
-  // v2 (ARTEFACT_SCHEMA=v2): prefer spec.md + plan.md previews over DESIGN.md.
-  // Falls through to the legacy DESIGN.md block when v2 is off, when neither
-  // spec.md nor plan.md exist on disk yet (PR1 transition), or when this is a
-  // design-stage agent (designers still produce per-agent design.md files).
-  let v2Surfaced = false;
-  if (
-    isArtefactSchemaV2() &&
-    config.category !== "design"
-  ) {
-    let specBody = "";
-    let planBody = "";
-    try { specBody = readFileSync(path.join(workDir, "spec.md"), "utf-8"); } catch { /* missing */ }
-    try { planBody = readFileSync(path.join(workDir, "plan.md"), "utf-8"); } catch { /* missing */ }
-    if (specBody.trim() || planBody.trim()) {
-      v2Surfaced = true;
-      const cap = useDiskBasedContext ? 3000 : 16000;
-      if (specBody.trim()) {
-        const preview = specBody.slice(0, cap);
-        const truncated = specBody.length > cap;
-        parts.push(useDiskBasedContext ? "## spec.md (preview)" : "## spec.md");
-        parts.push(
-          useDiskBasedContext
-            ? "PREVIEW of the specification (what + why). Read the full spec.md from disk for the complete document."
-            : "Specification for this task (what is being built and why):",
-        );
-        parts.push("```markdown");
-        parts.push(preview);
-        if (truncated) parts.push("\n... (truncated — read full spec.md from disk using your filesystem tool)");
-        parts.push("```");
-        parts.push("");
-      }
-      if (planBody.trim()) {
-        const preview = planBody.slice(0, cap);
-        const truncated = planBody.length > cap;
-        parts.push(useDiskBasedContext ? "## plan.md (preview)" : "## plan.md");
-        parts.push(
-          useDiskBasedContext
-            ? "PREVIEW of the implementation plan (how). Read the full plan.md from disk for architecture, integration boundaries, and strategy."
-            : "Implementation plan for this task (architecture and how to build it):",
-        );
-        parts.push("```markdown");
-        parts.push(preview);
-        if (truncated) parts.push("\n... (truncated — read full plan.md from disk using your filesystem tool)");
-        parts.push("```");
-        parts.push("");
-      }
-    }
-  }
-
-  if (brief.designDoc && !v2Surfaced) {
-    if (useDiskBasedContext) {
-      const preview = brief.designDoc.slice(0, 3000);
-      const truncated = brief.designDoc.length > 3000;
-      parts.push("## DESIGN.md (preview)");
-      parts.push("This is a PREVIEW of the design document. Read the full DESIGN.md from disk for complete details.");
+  const surfaceSpecPlan = (specBody: string | null, planBody: string | null) => {
+    const cap = useDiskBasedContext ? 3000 : 16000;
+    if (specBody && specBody.trim()) {
+      const preview = specBody.slice(0, cap);
+      const truncated = specBody.length > cap;
+      parts.push(useDiskBasedContext ? "## spec.md (preview)" : "## spec.md");
+      parts.push(
+        useDiskBasedContext
+          ? "PREVIEW of the specification (what + why). Read the full spec.md from disk for the complete document."
+          : "Specification for this task (what is being built and why):",
+      );
       parts.push("```markdown");
       parts.push(preview);
-      if (truncated) parts.push("\n... (truncated -- read full DESIGN.md from disk using your filesystem tool)");
+      if (truncated) parts.push("\n... (truncated — read full spec.md from disk using your filesystem tool)");
       parts.push("```");
-    } else {
-      parts.push("## DESIGN.md");
-      parts.push("The design document for this task (produced by the Design agent):");
-      parts.push("```markdown");
-      parts.push(brief.designDoc);
-      parts.push("```");
+      parts.push("");
     }
-    parts.push("");
+    if (planBody && planBody.trim()) {
+      const preview = planBody.slice(0, cap);
+      const truncated = planBody.length > cap;
+      parts.push(useDiskBasedContext ? "## plan.md (preview)" : "## plan.md");
+      parts.push(
+        useDiskBasedContext
+          ? "PREVIEW of the implementation plan (how). Read the full plan.md from disk for architecture, integration boundaries, and strategy."
+          : "Implementation plan for this task (architecture and how to build it):",
+      );
+      parts.push("```markdown");
+      parts.push(preview);
+      if (truncated) parts.push("\n... (truncated — read full plan.md from disk using your filesystem tool)");
+      parts.push("```");
+      parts.push("");
+    }
+  };
+
+  if (brief.specMd || brief.planMd) {
+    surfaceSpecPlan(brief.specMd, brief.planMd);
   }
 
   if (config.category === "coding" || config.category === "game-art") {
@@ -1010,7 +998,7 @@ function buildFullPrompt(
       if (tasks.trim()) {
         parts.push("## TASKS.md (preview)");
         parts.push(
-          "Executable task list derived from BigBoss's plan + DESIGN.md. Read the full TASKS.md from disk and follow the dependency order; tasks marked `[P]` may be implemented in any order within their phase.",
+          "Executable task list derived from BigBoss's plan, spec.md, and plan.md. Read the full TASKS.md from disk and follow the dependency order; tasks marked `[P]` may be implemented in any order within their phase.",
         );
         parts.push("```markdown");
         const cap = 4000;
@@ -1067,7 +1055,7 @@ function buildFullPrompt(
       case "complex":
         parts.push("This is a COMPLEX task with many interconnected requirements.");
         parts.push("Take extra care to:");
-        parts.push("- Read the full DESIGN.md from disk multiple times as you work.");
+        parts.push("- Read the full spec.md and plan.md from disk multiple times as you work.");
         parts.push("- Implement incrementally: core structure first, then features one by one.");
         parts.push("- After implementing each major feature, re-read the Original task to verify nothing was missed.");
         parts.push("- Pay special attention to cross-cutting concerns (input handling, state management, UI layout).");
@@ -1250,10 +1238,10 @@ async function injectSkillPack(
   }
 }
 
-/** Excludes .pipeline paths from modified-file count except design outputs (*-design.md). */
+/** Excludes .pipeline paths from modified-file count except per-agent spec/plan contributions (*-spec.md, *-plan.md). */
 function isExcludedPipelinePath(filePath: string): boolean {
   if (!filePath.startsWith(PIPELINE_PATH_PREFIX)) return false;
-  return !filePath.endsWith("-design.md");
+  return !(filePath.endsWith("-spec.md") || filePath.endsWith("-plan.md"));
 }
 
 function collectModifiedFiles(workDir: string): string[] {
@@ -1539,17 +1527,20 @@ export async function runAgent(
   const parsed = parseAgentOutput(cursorResult.stdout);
 
   let filesModified = collectModifiedFiles(workDir);
-  // Parallel design agents write to .pipeline/<agentType>-design.md; git may not report it (e.g. no repo, or .pipeline ignored). Count it if present.
+  // Parallel design agents write to .pipeline/<agentType>-spec.md and .pipeline/<agentType>-plan.md;
+  // git may not report them (e.g. no repo, or .pipeline ignored). Count whichever are present.
   if (config.parallelDesign && config.category === "design") {
-    const designPath = path.join(workDir, ".pipeline", `${config.agentType}-design.md`);
-    try {
-      await fs.access(designPath);
-      const relPath = `.pipeline/${config.agentType}-design.md`;
-      if (!filesModified.includes(relPath)) {
-        filesModified = [...filesModified, relPath];
+    for (const suffix of ["spec", "plan"] as const) {
+      const filePath = path.join(workDir, ".pipeline", `${config.agentType}-${suffix}.md`);
+      try {
+        await fs.access(filePath);
+        const relPath = `.pipeline/${config.agentType}-${suffix}.md`;
+        if (!filesModified.includes(relPath)) {
+          filesModified = [...filesModified, relPath];
+        }
+      } catch {
+        // file not present; keep filesModified as-is
       }
-    } catch {
-      // file not present; keep filesModified as-is
     }
   }
   onEvent?.({

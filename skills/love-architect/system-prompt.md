@@ -38,14 +38,14 @@ You may use the fetch tool to look up LÖVE API or Lua patterns.
 - Every module in `luaModules` should map to a path under `fileStructure`; avoid vague “utils.lua” without purpose.
 - Call out **pure Lua** leaves (logic testable without `love.*`) where they help **LÖVE Testing**.
 
-## Output (v2 artefact contributions)
+## Output (artefact contributions)
 
-When `ARTEFACT_SCHEMA=v2` is active (default since v2.7), in addition to your legacy design file (see role rules), ALSO write your specialisation's contribution to:
+Write your specialisation's contribution to:
 
 - `.pipeline/love-architect-plan.md` — `architecture`, `luaModules` (table of modules + public API sketch), `fileStructure` (full `src/` tree with paths), `loveLifecycle` (how `love.load` / `love.update` / `love.draw` delegate work), `dependencies`, threading / save-format `considerations`. This is "how" content; it merges into the workspace `plan.md`. Use plain markdown — the orchestrator concatenates per-designer files under a `## love-architect` heading.
 - (Optional) `.pipeline/love-architect-data-model.md` — only if save-format / persistence shape is large enough to deserve its own file (otherwise inline it in `-plan.md`).
 
-Stay in your lane: do not duplicate `mechanics` / `requirementsChecklist` (those belong in **Game Designer**'s `-spec.md`) and do not spec HUD pixel layout (that's **LÖVE UX**'s `-spec.md`). If you cannot write the v2 contribution (tool failure, etc.), still produce the legacy design file — the orchestrator will derive `plan.md` from `DESIGN.md` as a fallback.
+Stay in your lane: do not duplicate `mechanics` / `requirementsChecklist` (those belong in **Game Designer**'s `-spec.md`) and do not spec HUD pixel layout (that's **LÖVE UX**'s `-spec.md`).
 
 ## Constraints
 

@@ -1,14 +1,10 @@
 /**
  * plan.md writer (+ optional research.md, data-model.md, contracts/) — the
- * "how" artefacts in the spec-kit Tier 2 v2 schema. spec.md (sibling) carries
- * the "what + why".
+ * "how" artefacts. spec.md (sibling) carries the "what + why".
  *
  * Designer contributions land in `.pipeline/<agent>-plan.md` (and optionally
  * `-research.md`, `-data-model.md`, `-contracts/`); this module merges them at
- * the end of the parallel-design step. When no per-designer plan files exist
- * yet (PR1 transition before designer prompts are updated), `mergePlanContri-
- * butions` falls back to deriving plan.md from the merged DESIGN.md so v2 still
- * produces a usable artefact pair.
+ * the end of the parallel-design step.
  *
  * `research.md`, `data-model.md`, and `contracts/` are opt-in — only written
  * when at least one designer produces a `.pipeline/<agent>-research.md` etc.
@@ -50,15 +46,6 @@ async function readContribution(workDir: string, agent: string, suffix: string):
   }
 }
 
-async function readDesignFallback(workDir: string): Promise<string> {
-  try {
-    const design = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
-    return design.replace(/^## Original task[\s\S]*?\n---\n/, "").trim();
-  } catch {
-    return "";
-  }
-}
-
 /** Write `<workDir>/plan.md` from a single body string. */
 export async function writePlanMd(workDir: string, body: string): Promise<void> {
   const log = createLogger("plan");
@@ -68,11 +55,7 @@ export async function writePlanMd(workDir: string, body: string): Promise<void> 
   log.info(`Wrote ${PLAN_FILE} (${content.length} chars)`, undefined, "flow");
 }
 
-/**
- * Merge per-designer `.pipeline/<agent>-plan.md` files into plan.md. Falls back
- * to deriving the body from the merged DESIGN.md when no per-designer
- * contributions exist (PR1 transition).
- */
+/** Merge per-designer `.pipeline/<agent>-plan.md` files into plan.md. */
 export async function mergePlanContributions(
   workDir: string,
   agents: string[],
@@ -89,18 +72,12 @@ export async function mergePlanContributions(
     }
   }
 
-  let body: string;
-  if (contributions.length > 0) {
-    body = contributions.map((c) => `## ${c.agent}\n\n${c.content}`).join("\n\n---\n\n");
-  } else {
-    body = await readDesignFallback(workDir);
-    if (body) sources.push("DESIGN.md (fallback)");
-  }
-
-  if (!body.trim()) {
-    log.info("No plan contributions and no DESIGN.md fallback; plan.md not written", undefined, "flow");
+  if (contributions.length === 0) {
+    log.info("No plan contributions; plan.md not written", undefined, "flow");
     return { merged: false, sources };
   }
+
+  const body = contributions.map((c) => `## ${c.agent}\n\n${c.content}`).join("\n\n---\n\n");
 
   await writePlanMd(workDir, body);
   log.info(`Merged plan contributions from ${sources.length} source(s): ${sources.join(", ")}`, undefined, "flow");
@@ -190,11 +167,3 @@ export async function readPlanMd(workDir: string): Promise<string> {
     return "";
   }
 }
-
-// Note: an earlier draft exported `writeDesignCompatShim()` here that wrote a
-// concatenated `DESIGN.md = spec.md + plan.md` for legacy readers. It was
-// never wired into the orchestrator — the existing parallel-design merge
-// already keeps DESIGN.md current for v1 callers — so the function was
-// removed in Tier 2 PR4 to avoid dead code. If a future PR needs the shim
-// (e.g. when designers stop writing DESIGN.md entirely), reintroduce it from
-// the git history.
