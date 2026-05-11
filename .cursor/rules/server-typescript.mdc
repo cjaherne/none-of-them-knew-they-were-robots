@@ -1,0 +1,21 @@
+---
+description: Node server TypeScript — tests, logging, pure helpers, shared imports
+globs: server/**/*.ts
+alwaysApply: false
+---
+
+# Server (`server/`)
+
+## Tests
+
+- Use **`node:test`** with **`assert/strict`** and **`tsx`** for TypeScript (see `server/test/*.test.ts`).
+- **Register every new test file** in `server/package.json` under the `test` script — the runner lists files explicitly; omitted files never run.
+
+## Structure
+
+- Prefer **pure helpers** that return `{ ok: true, … } | { ok: false, status, error }` and keep Express handlers as thin wrappers (pattern in `server/src/artefact-endpoint.ts`). Avoid booting the full server + SQLite in unit tests when the logic can be isolated.
+
+## Logging and imports
+
+- Use `createLogger("scope")` from `@agents/shared`, not `console.*`.
+- Import shared types/utilities from the **`@agents/shared`** package, not deep relative paths into `packages/shared/src/`.

@@ -1,0 +1,21 @@
+---
+description: docs/ markdown — tone, linking, decisions, vs .cursor/plans
+globs: docs/**/*.md
+alwaysApply: false
+---
+
+# Documentation style (`docs/`)
+
+Same voice as the always-on `project-conventions.mdc` rule (British English, no emojis).
+
+## Voice and format
+
+- Prefer **links to source paths** over pasting long code; line numbers drift.
+
+## When behaviour changes
+
+- If the change reflects a **trade-off** or **reverses** a prior assumption, add at least a short paragraph to `docs/decisions.md`.
+
+## Plans vs maintained docs
+
+- `.cursor/plans/` is **design-time** material. When behaviour is normative for contributors, document it under `docs/` (and `README.md` if user-facing).

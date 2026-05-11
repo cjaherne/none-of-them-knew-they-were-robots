@@ -1,0 +1,19 @@
+---
+description: Static web UI — no bundler, artefact whitelist sync with server
+globs: web/**/*.{js,html,css}
+alwaysApply: false
+---
+
+# Web (`web/`)
+
+## Stack
+
+- **Vanilla JS + static HTML/CSS** only. `web/package.json` has no real build step — do not add TypeScript, bundlers (webpack/vite/esbuild), or SPA frameworks here unless the user explicitly requests it.
+
+## Artefacts panel
+
+- Keep **`ARTEFACT_TABS`** in `web/app.js` aligned with **`ARTEFACT_WHITELIST`** in `server/src/artefact-endpoint.ts`. Mismatched `file` values cause **400** responses in dev. When adding or renaming an artefact tab, update **both** files in the same change.
+
+## Pipeline coupling
+
+- UI refresh logic keys off **stage categories** from `server/src/pipeline-stages.ts`. New categories or artefact-producing stages may require matching updates in `web/app.js` (SSE triggers, tab wiring).
