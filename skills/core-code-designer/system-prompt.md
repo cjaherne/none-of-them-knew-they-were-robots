@@ -32,15 +32,13 @@ Respond with JSON containing:
 - `patterns`: Design patterns to apply
 - `considerations`: Security, performance, scalability notes
 
-## Output (v2 artefact contributions)
+## Output (artefact contributions)
 
-When `ARTEFACT_SCHEMA=v2` is active (default since v2.7), in addition to your legacy design file (see role rules), ALSO write your specialisation's contribution to:
+Write your specialisation's contribution to:
 
 - `.pipeline/core-code-designer-plan.md` — architecture, data models, API contracts, file/directory structure, dependency choices. This is "how" content; it merges into the workspace `plan.md`. Use plain markdown (headings + fenced code blocks for schemas/snippets) — the orchestrator concatenates per-designer files under a `## core-code-designer` heading.
 - (Optional) `.pipeline/core-code-designer-research.md` — only if you researched library / framework trade-offs worth preserving.
 - (Optional) `.pipeline/core-code-designer-data-model.md` — only if the data model is large enough to deserve its own file (otherwise inline it in `-plan.md`).
-
-If you cannot write the v2 contribution (tool failure, etc.), still produce the legacy design file — the orchestrator will derive `plan.md` from `DESIGN.md` as a fallback.
 
 ## Constraints
 

@@ -54,7 +54,7 @@ Nothing in this repo replaces Cursor IDE; the server is a **driver** around the 
 | Module | Responsibility |
 |--------|----------------|
 | `server/src/server.ts` | HTTP routes: task create, approve, cancel, SSE stream, logs, **artefact fetch** |
-| `server/src/orchestrator.ts` | **Single pipeline driver**: workspace setup, stage groups, merges, v2 injections, approval waits |
+| `server/src/orchestrator.ts` | **Single pipeline driver**: workspace setup, stage groups, merges, Overseer stage injection, approval waits |
 | `server/src/agent-runner.ts` | **Run one agent**: prompt assembly, `agent` spawn, lint/build/Lua checks, context brief |
 | `server/src/pipeline-stages.ts` | Declarative **stage lists** per mode/stack; `injectV2OverseerStages`, game-art injection |
 | `server/src/bigboss-director.ts` | OpenAI-backed planning, merge fallbacks, Overseer JSON contracts, iteration caps |
@@ -62,11 +62,10 @@ Nothing in this repo replaces Cursor IDE; the server is a **driver** around the 
 | `server/src/log-store.ts` | SQLite persistence for structured logs and task history |
 | `server/src/skill-loader.ts` | Load pack metadata from `skills/<agent>/` |
 | `server/src/cursor-session-registry.ts` | Optional **`agent create-chat`** + `--resume` per agent type |
-| `server/src/artefact-schema.ts` | `ARTEFACT_SCHEMA` env: **v2 default**, `v1` explicit opt-out |
 | `server/src/*-artifact.ts` | Writers/mergers: requirements, constitution, spec, plan, tasks, checklists |
-| `server/src/clarify-stage.ts` | Discrete design-review stage (v2) |
-| `server/src/analyze-stage.ts` | Discrete code-review + drift fix-ups (v2) |
-| `server/src/checklist-stage.ts` | `CHECKLISTS.md` review + one fix-up (v2) |
+| `server/src/clarify-stage.ts` | Discrete design-review stage |
+| `server/src/analyze-stage.ts` | Discrete code-review + drift fix-ups |
+| `server/src/checklist-stage.ts` | `CHECKLISTS.md` review + one fix-up |
 | `server/src/artefact-endpoint.ts` | Pure helper for **whitelisted** workspace file reads (UI + security) |
 
 ## Extension model (why skill packs)
@@ -92,7 +91,7 @@ Treat **workspace paths** and **API exposure** as sensitive if you ever bind bey
 
 ## Related reading
 
-- [`pipeline-and-artifacts.md`](pipeline-and-artifacts.md) — chronological behaviour and v1/v2 split
+- [`pipeline-and-artifacts.md`](pipeline-and-artifacts.md) — chronological behaviour and current artefact tree
 - [`security-and-deployment.md`](security-and-deployment.md) — trust model and how to expose the API
 - [`operations.md`](operations.md) — workflows, cost/latency levers, Cursor vs OpenAI
 - [`decisions.md`](decisions.md) — why major forks (2.0 stack cut, spec-kit Tier 2, UI visibility PR) exist

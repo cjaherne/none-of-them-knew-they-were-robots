@@ -14,13 +14,15 @@ A voice-controlled multi-agent AI design and development team: a **web UI**, a *
 
 **Version 2.5** — **Game-art (LÖVE)**: post-design **game-art** stage uses OpenAI **DALL-E 3** via [`packages/openai-sprite-mcp`](packages/openai-sprite-mcp) (`generate_sprite` MCP) when `OPENAI_API_KEY` is set; **ASSETS.md** + PNGs under `assets/` before `lua-coding`. **MCP injection** resolves `__OPENAI_SPRITE_MCP_ENTRY__` and `__PIPELINE_WORKSPACE__` in `.cursor/mcp.json` per clone. **Release** stage instructions match the **merge-to-main** Cursor skill: push, **`npm run build`**, `gh pr create`, **`gh pr merge --squash --delete-branch`**, then annotated **tag on `main`** (see [`skills/release/system-prompt.md`](skills/release/system-prompt.md)).
 
-**Version 2.6** — **Spec-kit Tier 1 + Tier 2 (PR1–PR3, additive)**: a project-wide **`constitution.md`** (governance) is prepended to every agent prompt, and **`TASKS.md`** (dependency-aware task list with file paths + R-numbered links) is generated after the design merge so coding agents have an executable plan. An opt-in **`ARTEFACT_SCHEMA=v2`** flag enables the v2 artefact tree — **`spec.md`** (what/why), **`plan.md`** (how), **`CHECKLISTS.md`** (acceptance + smoke + governance) — alongside a back-compat `DESIGN.md` shim. Three new Overseer sub-stages replace the inline post-design / post-coding reviews when the flag is set: **`clarify`** (rewinds parallel design on gaps and appends clarifications to `spec.md`), **`analyze`** (drift detection with bounded coding fix-ups), and **`checklist`** (read-only `CHECKLISTS.md` review with one auto-fix; advisory by default, blocking under `CHECKLIST_BLOCKING=1`). **`LOVE_SMOKE_CHECKLIST`** is now **deprecated for v2** (the stack-agnostic `checklist` stage inherits the same bullets). First **server unit test suite** ships under `server/test/` (Node 20+ built-in `node:test` runner; `npm test` in `server/` or via the workspace runner from the repo root).
+**Version 2.6** — **Spec-kit Tier 1 + Tier 2 (PR1–PR3, additive)**: introduced a project-wide **`constitution.md`** (governance) prepended to every agent prompt, **`TASKS.md`** (dependency-aware task list with file paths + R-numbered links) generated after the design merge, and the **`spec.md`** / **`plan.md`** / **`CHECKLISTS.md`** artefact tree under an opt-in `ARTEFACT_SCHEMA=v2` flag. Three new Overseer sub-stages — **`clarify`**, **`analyze`**, **`checklist`** — replaced the inline post-design / post-coding reviews. First **server unit test suite** shipped under `server/test/` (Node 20+ built-in `node:test`).
 
-**Version 2.7** — **Spec-kit Tier 2 PR4 — `ARTEFACT_SCHEMA=v2` is now the default.** New tasks get the `clarify` / `analyze` / `checklist` Overseer sub-stages, the `spec.md` / `plan.md` / `CHECKLISTS.md` artefact tree, and the `constitution.md` prompt prepend automatically — no env var required. Legacy v1 behaviour is preserved for one release as the explicit opt-out **`ARTEFACT_SCHEMA=v1`**. Designer skill packs (`ux-designer`, `core-code-designer`, `graphics-designer`, `game-designer`, `love-architect`, `love-ux`) now write per-artefact `.pipeline/<agent>-spec.md` / `.pipeline/<agent>-plan.md` contributions natively (in addition to the legacy `.pipeline/<agent>-design.md` write that v1 still depends on), so v2 spec/plan content reflects each designer's specialisation instead of being derived from the merged `DESIGN.md`. Removed the unused `writeDesignCompatShim` from `plan-artifact.ts` (declared but never wired). Pipeline diagram below has been rewritten for the v2 lifecycle.
+**Version 2.7** — **Spec-kit Tier 2 PR4 — `ARTEFACT_SCHEMA=v2` became the default.** New tasks got the `clarify` / `analyze` / `checklist` Overseer sub-stages, the `spec.md` / `plan.md` / `CHECKLISTS.md` artefact tree, and the `constitution.md` prompt prepend automatically. Designer skill packs began writing per-artefact `.pipeline/<agent>-spec.md` / `.pipeline/<agent>-plan.md` contributions natively (alongside the legacy per-agent design file that v1 still consumed).
 
 **Version 2.8** — **Spec-kit Tier 2 PR5 — v2 visibility in the web UI.** Closes the gap left by 2.6 / 2.7: the v2 backend wrote `spec.md` / `plan.md` / `TASKS.md` / `CHECKLISTS.md` / `constitution.md` and emitted per-stage `clarifyResult` / `analyzeResult` / `checklistResult` payloads, but none of that was visible. New **`Artefacts` tab** with a Spec / Plan / Tasks / Checklists / Constitution / Requirements / Design (v1) sub-strip — lazy-fetched on click, auto-disabled when the file isn't written yet, and auto-refreshed when the relevant stage succeeds. New **`GET /tasks/:id/artefacts/:file`** endpoint backs the panel (whitelist + path-traversal hardening; pure helper extracted to [`server/src/artefact-endpoint.ts`](server/src/artefact-endpoint.ts) for unit testing). **Stage cards** now render result chips for clarify (gaps / clarifications appended → `spec.md`), analyze (drift, issue count, fix-ups, cap), and checklist (pass / fail counts + override badge). New **`approvalType: "checklist"` approval banner** for `CHECKLIST_BLOCKING=1`: turns the previous silent pipeline failure into a three-action gate — **Override & Continue** (records the override in `CHECKLISTS.md` via a new `appendOverrideNote()` audit helper that flips `[!]` → `[~]` and appends a `## Overrides` footer), **Re-run Analyze** (rewinds one stage, capped at 1 to avoid infinite loops), or **Cancel Pipeline**. 15 new unit tests under `server/test/artefact-endpoint.test.ts` (whitelist + path-traversal + 200/404 branches + every whitelisted artefact roundtrip + 5 override-helper tests). Full server test suite: 49/49 pass.
 
 **Version 2.9** — **Maintained `docs/` narrative and Cursor in-repo guidance.** Long-form technical docs live under [`docs/`](docs/README.md) (architecture, pipeline and artefacts, security and deployment, operations, decision log). **Cursor project rules** in [`.cursor/rules/`](.cursor/rules/) give always-on repo pointers plus scoped conventions for `server/`, `web/`, `skills/`, and `docs/`. **source-change-workflow** skill in [`.cursor/skills/source-change-workflow/`](.cursor/skills/source-change-workflow/) encodes feature-branch work, `npm test`, and README vs `docs/` updates. The Development section in this README links to `docs/` for depth; the existing **merge-to-main** Cursor skill and Release agent flow are unchanged this release.
+
+**Version 3.0 (major)** — **Retired the v1 artefact schema and the merged `DESIGN.md` surface.** Breaking changes: the **`ARTEFACT_SCHEMA`** env flag and the legacy **`LOVE_SMOKE_CHECKLIST`** env flag are gone; the orchestrator unconditionally injects the **`clarify`** / **`analyze`** / **`checklist`** Overseer sub-stages and writes only the **`spec.md`** / **`plan.md`** / **`TASKS.md`** / **`CHECKLISTS.md`** / **`constitution.md`** artefact tree (plus **`REQUIREMENTS.md`**). The per-agent `.pipeline/<agent>-design.md` write and the root **`DESIGN.md`** merge are removed; designers contribute only `-spec.md` / `-plan.md`. The **`Design (v1)`** tab is removed from the Artefacts panel, and `GET /tasks/:id/artefacts/DESIGN.md` now returns **400**. The `coding` skill expertise block was realigned to this repo's actual stack (TypeScript / Node / Express / React, `node:test`, MCP, SQLite, SSE). Inline post-design / post-coding Overseer code paths in `orchestrator.ts` and their helpers (`overseerPostDesignReview`, `overseerPostCodeReview`, `mergeDesignOutputs`, `runLoveSmokeChecklistOpenAI`, `prependOriginalTaskToDesign`, `ensureDesignReferencesRequirements`, `writeDesignCompatShim` stub) were removed. Server unit tests still pass (42 + checklist suite).
 
 ## Overview
 
@@ -93,7 +95,7 @@ flowchart LR
 
 Stages depend on **pipeline mode** (`full`, `auto`, `code-test`, `code-only`) and **BigBoss** routing in `auto` mode. **Web** stacks use UX / core-code / graphics designers, **`coding`**, **`testing`**. **LÖVE** stacks use **game-designer**, **love-architect**, **love-ux**, **`lua-coding`**, **`love-testing`**. A **release** stage is appended when applicable.
 
-The diagram below shows the **v2 lifecycle** (default since v2.7). With `ARTEFACT_SCHEMA=v1` the legacy flow runs instead — single merged `DESIGN.md`, inline post-design / post-coding Overseer reviews, optional `LOVE_SMOKE_CHECKLIST=1` smoke pass — see "Spec-kit Tier 2 (v2 default)" below for the side-by-side.
+The diagram below shows the **pipeline lifecycle** (v3.0+). The orchestrator always injects the **`clarify`** / **`analyze`** / **`checklist`** Overseer sub-stages and writes the **`spec.md`** / **`plan.md`** / **`TASKS.md`** / **`CHECKLISTS.md`** / **`constitution.md`** artefact tree. The legacy v1 single-`DESIGN.md` flow was retired in v3.0 — see [`docs/decisions.md`](docs/decisions.md) **D-014**.
 
 ```mermaid
 flowchart TD
@@ -119,28 +121,28 @@ flowchart TD
   V --> RL[Release: build PR squash-merge tag on main]
 ```
 
-#### Spec-kit Tier 2 (v2 default)
+#### Overseer sub-stages
 
-Three Overseer sub-stages replace the inline post-design / post-coding reviews:
+Three discrete Overseer sub-stages run in every pipeline:
 
-| Stage | Replaces | Behaviour |
-|-------|----------|-----------|
-| **`clarify`** (after design merge) | inline `overseerPostDesignReview` | Reviews `spec.md`/`plan.md`; on `gaps`, rewinds to the design group with `gapsByAgent` partial re-runs; appends a `## Clarifications` section to `spec.md`. Design approval moves to **after** clarify so users see clarifications before approving. |
-| **`analyze`** (after coding) | inline `overseerPostCodeReview` | Reviews implementation vs design + `TASKS.md`; runs bounded drift fix-ups (cap `MAX_OVERSEER_CODE_ITERATIONS`) with optional `focusPaths`. |
-| **`checklist`** (after analyze, before validation) | LÖVE-only `LOVE_SMOKE_CHECKLIST=1` | Stack-agnostic read-only pass over `CHECKLISTS.md`; ticks `[X]` / `[!]`; on `incomplete`, hands off to **one** focused coding fix-up. **Advisory by default**; set `CHECKLIST_BLOCKING=1` to fail the pipeline on residual failures. LÖVE stacks inherit the existing smoke bullets verbatim. |
+| Stage | Behaviour |
+|-------|-----------|
+| **`clarify`** (after design merge) | Reviews `spec.md` / `plan.md`; on `gaps`, rewinds to the design group with `gapsByAgent` partial re-runs; appends a `## Clarifications` section to `spec.md`. Design approval runs **after** clarify so users see clarifications before approving. |
+| **`analyze`** (after coding) | Reviews implementation vs `spec.md` / `plan.md` + `TASKS.md`; runs bounded drift fix-ups (cap `MAX_OVERSEER_CODE_ITERATIONS`) with optional `focusPaths`. |
+| **`checklist`** (after analyze, before validation) | Stack-agnostic read-only pass over `CHECKLISTS.md`; ticks `[X]` / `[!]`; on `incomplete`, hands off to **one** focused coding fix-up. **Advisory by default**; set `CHECKLIST_BLOCKING=1` to fail the pipeline on residual failures. LÖVE stacks inherit the existing smoke bullets verbatim. |
 
-v2 artefacts (always written to the workspace root):
+Artefacts (always written to the workspace root):
 
 - **`constitution.md`** — project governance, prepended to every agent prompt. Auto-bootstrapped from the user task under `CONSTITUTION_BOOTSTRAP=1`.
-- **`spec.md`** — what + why; merged from per-designer `.pipeline/<agent>-spec.md` (with a `DESIGN.md`-derived fallback). Updated by the `clarify` stage with appended Q&A.
+- **`spec.md`** — what + why; merged from per-designer `.pipeline/<agent>-spec.md`. Updated by the `clarify` stage with appended Q&A.
 - **`plan.md`** — how; merged from per-designer `.pipeline/<agent>-plan.md`.
 - **`TASKS.md`** — dependency-aware task list with file paths + `R#` requirement links. Coding agents read this first.
 - **`CHECKLISTS.md`** — acceptance + smoke + governance bullets. Ticked live by the `checklist` stage.
-- **`REQUIREMENTS.md`** + **`DESIGN.md`** — kept (DESIGN.md is still produced by the parallel-design merge for back-compat with Overseer prompts and coding-agent fallbacks; will be retired in a future PR).
+- **`REQUIREMENTS.md`** — numbered traceability extracted from the user prompt.
 
 ### Parallel design merge and Overseer
 
-When several designers run in **parallel**, each writes to `.pipeline/<agent>-design.md`. The orchestrator **merges** them into one root **`DESIGN.md`** (agent merge or OpenAI merge, with fallback). **BigBoss (Overseer)** compares the merged design to the original task; on **gaps**, it can target **`gapsByAgent`** so only some designers re-run. The **Original task** block is always prepended so requirements stay visible to downstream agents.
+When several designers run in **parallel**, each writes to `.pipeline/<agent>-spec.md` and `.pipeline/<agent>-plan.md`. The orchestrator merges those contributions into the workspace's root **`spec.md`** and **`plan.md`**. **BigBoss (Overseer)** then runs the **`clarify`** sub-stage to compare the merged spec + plan to the original task; on **gaps**, it can target **`gapsByAgent`** so only some designers re-run. The **Original task** block is preserved in `spec.md` so requirements stay visible to downstream agents.
 
 ```mermaid
 flowchart LR
@@ -149,15 +151,15 @@ flowchart LR
     A[love-architect]
     U[love-ux]
   end
-  parallel --> MERGE[Merge to DESIGN.md]
-  MERGE --> OV[Overseer design JSON]
+  parallel --> MERGE[Merge to spec.md / plan.md]
+  MERGE --> OV[Clarify: Overseer JSON review]
   OV -->|ok| NEXT[Coding]
   OV -->|gaps| parallel
 ```
 
 ### Coding agent handoff
 
-The **coding** agent receives a **preamble** (role, self-checks), **DESIGN.md preview** (truncated — full file must be read from disk), optional **`REQUIREMENTS.md` preview**, **file tree**, and **upstream handoffs** from `.pipeline/*.handoff.md`. After coding, the server may run **lint/build** or **Lua syntax** checks, **execution verification** (`npm run build` or `luac`), then **Overseer code review** (implementation vs design + requirements). **Drift** triggers bounded **fix-up** coding passes with optional **`focusPaths`**. With **`requireDesignApproval`**, **`CODING_NOTES.md`** can trigger a **feedback** gate (continue vs re-run design).
+The **coding** agent receives a **preamble** (role, self-checks), **`spec.md` and `plan.md` previews** (truncated — full files must be read from disk), optional **`REQUIREMENTS.md` preview**, **file tree**, and **upstream handoffs** from `.pipeline/*.handoff.md`. After coding, the server may run **lint/build** or **Lua syntax** checks, **execution verification** (`npm run build` or `luac`), then the **`analyze`** Overseer sub-stage (implementation vs spec/plan + requirements). **Drift** triggers bounded **fix-up** coding passes with optional **`focusPaths`**. With **`requireDesignApproval`**, **`CODING_NOTES.md`** can trigger a **feedback** gate (continue vs re-run design).
 
 ### Human-in-the-loop gates
 
@@ -213,7 +215,7 @@ You can open `web/index.html` directly (or serve the `web/` folder elsewhere). I
 ## Usage
 
 - **Sidebar** — command, project (workspace, repo, branches, pipeline mode), voice, **design approval**, **requirements approval** (pause before design to edit the extracted checklist), **Server** (API URL), logging level.
-- **Live / Artefacts / History** — current run, **the v2 artefact tree** (`spec.md` / `plan.md` / `TASKS.md` / `CHECKLISTS.md` / `constitution.md` plus `REQUIREMENTS.md` / `DESIGN.md` for v1), and past tasks and logs.
+- **Live / Artefacts / History** — current run, the **artefact tree** (`spec.md` / `plan.md` / `TASKS.md` / `CHECKLISTS.md` / `constitution.md` / `REQUIREMENTS.md`), and past tasks and logs.
 - **Stage cards** — show v2 result chips for `clarify` (gaps + clarifications appended), `analyze` (drift + issue/fix-up counts + cap), and `checklist` (pass / fail counts + override badge).
 - **Voice** — browser SpeechRecognition where available; otherwise server-side Whisper if configured.
 
@@ -245,7 +247,7 @@ cd server && npm run dev
 npx tsc --noEmit -p packages/shared/tsconfig.json
 npx tsc --noEmit -p server/tsconfig.json
 
-# Run server unit tests (Node 20+ built-in test runner; covers ARTEFACT_SCHEMA flag,
+# Run server unit tests (Node 20+ built-in test runner; covers
 # pipeline-stages.injectV2OverseerStages shape, checklist-stage helpers + noop branches,
 # CHECKLISTS.md tickers, the artefact-endpoint helper (whitelist + path traversal +
 # 200/404 branches), and CHECKLISTS.md override audit-trail helper)
@@ -268,9 +270,7 @@ The `web/` package has a simple `npm run dev` (static serve) if you want to iter
 | `BIGBOSS_PERSIST_CLI` | If `0` and `CURSOR_AGENT_SESSIONS` unset, same as `CURSOR_AGENT_SESSIONS=off` (legacy) | Optional |
 | `BIGBOSS_MODEL` | OpenAI model for planning (default `gpt-4o-mini`) | Optional |
 | `MERGE_MODEL` | Design merge model (defaults to `BIGBOSS_MODEL`) | Optional |
-| `LOVE_SMOKE_CHECKLIST` | (v1 only — **deprecated for `ARTEFACT_SCHEMA=v2`**, where `CHECKLISTS.md` inherits the same bullets) If `1`, after a successful LÖVE **coding** stage, log a JSON smoke assessment (movement / persistence) from a read-only model pass | Optional |
-| `ARTEFACT_SCHEMA` | **Default `v2` (since v2.7)** — spec-kit Tier 2 artefact tree (`spec.md`, `plan.md`, `CHECKLISTS.md`) + `clarify` / `analyze` / `checklist` Overseer sub-stages. Set to `v1` for one-release opt-out to the legacy single-`DESIGN.md` flow (byte-identical pre-v2.6 behaviour) | Optional |
-| `CHECKLIST_BLOCKING` | If `1` and `ARTEFACT_SCHEMA=v2`, surface the new **checklist approval banner** (Override & Continue / Re-run Analyze / Cancel) when `CHECKLISTS.md` is still incomplete after the auto fix-up budget. Override accepts an optional reason and records `[~]` in the file via `appendOverrideNote()`. Default advisory-only (no gate) | Optional |
+| `CHECKLIST_BLOCKING` | If `1`, surface the **checklist approval banner** (Override & Continue / Re-run Analyze / Cancel) when `CHECKLISTS.md` is still incomplete after the auto fix-up budget. Override accepts an optional reason and records `[~]` in the file via `appendOverrideNote()`. Default advisory-only (no gate) | Optional |
 | `CONSTITUTION_BOOTSTRAP` | If `1` and `.specify/memory/constitution.md` (or `CONSTITUTION.md`) is missing, bootstrap a draft from the user's task prompt at the start of the pipeline | Optional |
 
 ### `CURSOR_AGENT_MODEL` syntax

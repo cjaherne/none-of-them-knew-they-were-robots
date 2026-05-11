@@ -1,7 +1,7 @@
 /**
  * Unit tests for src/pipeline-stages.ts — focused on injectV2OverseerStages,
- * the helper that splices clarify/analyze/checklist into the stage list when
- * ARTEFACT_SCHEMA=v2. The v1/v2 contract demands:
+ * the helper that splices clarify/analyze/checklist into the stage list. The
+ * helper is called unconditionally by the orchestrator. The contract demands:
  *   - Idempotence (calling twice is a no-op).
  *   - No mutation of input.
  *   - Insertion only when corresponding upstream/downstream categories exist
@@ -9,7 +9,7 @@
  *   - Strict relative order: design → clarify → coding → analyze → checklist.
  *
  * These are the load-bearing invariants the orchestrator dispatch loop relies
- * on. A regression here silently breaks v2 pipelines.
+ * on. A regression here silently breaks pipelines.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -133,4 +133,18 @@ test("injectV2OverseerStages: code-only pipeline (no design, no validation) gets
     result.map((s) => s.category),
     ["coding", "analyze", "checklist"],
   );
+});
+
+test("injectV2OverseerStages: clarify + analyze + checklist are now injected unconditionally (no ARTEFACT_SCHEMA gate)", () => {
+  // Regression guard: v3.0.0 retired the ARTEFACT_SCHEMA env flag and the v1
+  // pipeline. clarify, analyze, and checklist must always appear in the
+  // expanded stage list as long as the upstream/downstream categories are
+  // present. If a future refactor reintroduces a conditional, this test fails.
+  for (const stages of [FULL_STAGES_WEB, FULL_STAGES_LOVE]) {
+    const result = injectV2OverseerStages(stages);
+    const cats = result.map((s) => s.category);
+    assert.ok(cats.includes("clarify"), "clarify must be injected for full pipeline");
+    assert.ok(cats.includes("analyze"), "analyze must be injected for full pipeline");
+    assert.ok(cats.includes("checklist"), "checklist must be injected for full pipeline");
+  }
 });

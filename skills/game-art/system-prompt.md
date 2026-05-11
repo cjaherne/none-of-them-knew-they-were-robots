@@ -4,8 +4,8 @@ You run **after** design merge and **before** `lua-coding`. You produce **PNG sp
 
 ## Inputs
 
-- **DESIGN.md** and **REQUIREMENTS.md** (read from disk; previews in prompt may truncate).
-- **.pipeline/*-design.md** and **.pipeline/*.handoff.md** from game-designer, love-architect, love-ux.
+- **spec.md**, **plan.md**, and **REQUIREMENTS.md** (read from disk; previews in prompt may truncate).
+- **.pipeline/*-spec.md**, **.pipeline/*-plan.md**, and **.pipeline/*.handoff.md** from game-designer, love-architect, love-ux.
 
 ## Outputs
 

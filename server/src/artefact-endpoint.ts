@@ -1,5 +1,5 @@
 /**
- * Tier 2 PR5 — pure helpers for the GET /tasks/:id/artefacts/:file endpoint.
+ * Pure helpers for the GET /tasks/:id/artefacts/:file endpoint.
  *
  * The Express handler in server.ts is a thin wrapper around `readArtefact`;
  * keeping the file-resolution + whitelist + path-traversal logic here makes
@@ -10,11 +10,9 @@ import * as fs from "fs";
 import * as path from "path";
 
 /**
- * Allowed artefact file names. Kept deliberately small: only Tier 2 v2
- * artefacts plus pre-existing REQUIREMENTS.md / DESIGN.md so the panel
- * renders for both v1 and v2 pipelines. MUST stay in sync with the
- * `ARTEFACT_TABS` array in web/app.js — a missing entry on either side
- * is visible during local dev.
+ * Allowed artefact file names. Kept deliberately small. MUST stay in sync
+ * with the `ARTEFACT_TABS` array in web/app.js — a missing entry on either
+ * side is visible during local dev.
  */
 export const ARTEFACT_WHITELIST: ReadonlySet<string> = new Set([
   "constitution.md",
@@ -23,7 +21,6 @@ export const ARTEFACT_WHITELIST: ReadonlySet<string> = new Set([
   "plan.md",
   "TASKS.md",
   "CHECKLISTS.md",
-  "DESIGN.md",
 ]);
 
 export type ArtefactReadOk = { ok: true; content: string };

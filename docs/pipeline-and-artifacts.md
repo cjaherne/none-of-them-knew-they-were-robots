@@ -1,6 +1,6 @@
 # Pipeline and artefacts
 
-This document describes **what runs, in what order**, and **which files** appear on disk. For **why** v2 exists and how it differs from GitHub’s spec-kit CLI, see [`decisions.md`](decisions.md).
+This document describes **what runs, in what order**, and **which files** appear on disk. For the historical context of the artefact schema and how it differs from GitHub's spec-kit CLI, see [`decisions.md`](decisions.md) (D-007, D-008 superseded by D-014).
 
 ## Task lifecycle (API + UI)
 
@@ -22,54 +22,56 @@ BigBoss can narrow the graph in `auto` mode; the UI also exposes **full**, **cod
 
 Stack is inferred from BigBoss’s chosen agents (`inferStackFromAgents`). **Game-art** (`game-art` agent) is **injected after design** for LÖVE when OpenAI image tooling is available — see `injectPostDesignGameArt`.
 
-## Artefact schema: v1 vs v2 (`ARTEFACT_SCHEMA`)
+## Artefact schema
 
-| | **v1** (`ARTEFACT_SCHEMA=v1`) | **v2** (default since 2.7) |
-|---|------------------------------|----------------------------|
-| Design output | Merged **`DESIGN.md`** (+ per-agent files under `.pipeline/`) | Same merge **plus** merged **`spec.md`** / **`plan.md`** (and optional research/data-model/contracts) |
-| Overseer | **Inline** post-design and post-coding review inside the orchestrator loop | **Discrete stages** **`clarify`**, **`analyze`**, **`checklist`** injected after design merge / after coding / after analyze respectively |
-| Task list | Optional / not central | **`TASKS.md`** generated after design merge for coding agents |
-| Quality checklist | LÖVE-only env `LOVE_SMOKE_CHECKLIST` | Stack-agnostic **`CHECKLISTS.md`** + **`checklist`** stage; `LOVE_SMOKE_CHECKLIST` deprecated under v2 |
-| Governance | Ad hoc | **`constitution.md`** prepended to every agent prompt (optional bootstrap via `CONSTITUTION_BOOTSTRAP`) |
+Designers contribute per-artefact `.pipeline/<agent>-spec.md` (what + why) and `.pipeline/<agent>-plan.md` (how / architecture). The orchestrator merges those contributions into the workspace's root `spec.md` and `plan.md`. `TASKS.md` is generated after the merge (BigBoss extracts task ids + file paths from `spec.md` + `plan.md` + `REQUIREMENTS.md` when `OPENAI_API_KEY` is set, otherwise a stage-derived skeleton is written). `CHECKLISTS.md` is generated alongside as a stack-agnostic quality bar.
 
-Implementation gate: `server/src/artefact-schema.ts` — only explicit `v1` opts out; everything else is treated as **v2**.
+| Concern | Where it lives |
+|---------|----------------|
+| What + why (user-facing scope, acceptance, original task) | **`spec.md`** |
+| How (architecture, file layout, data models, dependencies) | **`plan.md`** |
+| Executable task list with file paths + `R#` requirement links | **`TASKS.md`** |
+| Acceptance + smoke + governance checklist | **`CHECKLISTS.md`** |
+| Numbered requirements traceability | **`REQUIREMENTS.md`** |
+| Project governance prepended to every agent prompt | **`constitution.md`** |
 
-## v2 stage injection (`injectV2OverseerStages`)
+The legacy single-`DESIGN.md` flow and the `ARTEFACT_SCHEMA` / `LOVE_SMOKE_CHECKLIST` env flags were retired in v3.0 — see [`decisions.md`](decisions.md) **D-014**.
 
-When v2 is active, the orchestrator inserts:
+## Overseer stage injection (`injectV2OverseerStages`)
+
+The orchestrator always inserts:
 
 1. **`clarify`** — immediately **after the last design stage** in the flattened plan (after merge + `TASKS.md` / checklist generation for parallel design paths).
 2. **`analyze`** — after the **last coding** stage (before validation in typical full pipelines).
 3. **`checklist`** — **after `analyze`**, before validation.
 
-**Invariant** (tested in `server/test/pipeline-stages.test.ts`): `clarify` sits after design; `analyze` then `checklist` stay adjacent in that order.
+**Invariant** (tested in `server/test/pipeline-stages.test.ts`): `clarify` sits after design; `analyze` then `checklist` stay adjacent in that order. The helper is unconditional — there is no longer an env-flag gate.
 
 ## Human-in-the-loop gates (current)
 
 | Gate | Trigger | UI `approvalType` | Notes |
 |------|---------|-------------------|--------|
 | Requirements | Optional `requireRequirementsApproval` after `REQUIREMENTS.md` | `requirements` | Revise appends user notes |
-| Design | Optional `requireDesignApproval` after merged / single design | `design` | Runs **after** `clarify` in v2 so users see clarifications first |
+| Design | Optional `requireDesignApproval` after merged / single design | `design` | Runs **after** `clarify` so users see clarifications first |
 | Coding feedback | Design approval on + `CODING_NOTES.md` conditions | `feedback` | Continue vs redesign |
 | Checklist blocking | `CHECKLIST_BLOCKING=1` + checklist still failing after fix-up | `checklist` | Override (audit note in `CHECKLISTS.md`), re-analyze (capped rewind), or cancel |
 
-## Workspace files (v2 mental checklist)
+## Workspace files (mental checklist)
 
 | File | Produced by | Consumed by |
 |------|-------------|-------------|
 | `REQUIREMENTS.md` | Requirements extraction | Designers, Overseer, TASKS/checklists |
 | `constitution.md` | User-provided or bootstrap | All agents (prompt prepend) |
-| `DESIGN.md` | Parallel design merge | Legacy prompts, fallbacks |
 | `spec.md` | Per-designer `*-spec.md` merge + **clarify** append | Agents, checklist, UI artefact tab |
 | `plan.md` | Per-designer `*-plan.md` merge | Agents, checklist |
 | `TASKS.md` | Generator post-design | Coding agents |
 | `CHECKLISTS.md` | Generator post-design | **checklist** stage; UI |
-| `.pipeline/*` | Each agent | Merge inputs |
+| `.pipeline/<agent>-spec.md`, `.pipeline/<agent>-plan.md`, `.pipeline/*.handoff.md` | Each agent | Merge inputs and downstream handoffs |
 
-## UI coupling (post 2.8)
+## UI coupling
 
 - **`GET /tasks/:id/artefacts/:file`** — whitelist only (see `server/src/artefact-endpoint.ts`); UI sub-tabs must stay in sync.
-- **`task.workDir`** — set after `setupWorkspace()` so the artefact endpoint resolves paths; not used for v1-only flows beyond “missing = 404”.
+- **`task.workDir`** — set after `setupWorkspace()` so the artefact endpoint resolves paths.
 
 ## Bounded loops (safety)
 
@@ -92,4 +94,4 @@ When a git remote workflow applies, a **release** agent stage can run merge-to-m
 - [`architecture.md`](architecture.md) — module map
 - [`security-and-deployment.md`](security-and-deployment.md) — exposing the server beyond localhost
 - [`operations.md`](operations.md) — cost/latency and operator workflows
-- [`decisions.md`](decisions.md) — rationale for v2 and UI surfacing
+- [`decisions.md`](decisions.md) — rationale for the artefact schema and UI surfacing

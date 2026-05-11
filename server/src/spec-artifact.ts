@@ -1,15 +1,13 @@
 /**
- * spec.md writer — the "what + why" artefact in the spec-kit Tier 2 v2 schema.
+ * spec.md writer — the "what + why" artefact.
  *
- * Replaces the "Original task" + requirements traceability portion of DESIGN.md
- * with a dedicated file. The plan.md sibling carries the "how" (architecture).
+ * Holds the "Original task" header, requirements traceability link, and the
+ * merged user-facing specification body (user stories, acceptance criteria,
+ * UX-facing flows). The plan.md sibling carries the "how" (architecture).
  *
  * Per-designer contributions land in `.pipeline/<agent>-spec.md`; this module
- * merges them at the end of the parallel-design step, mirroring the existing
- * `mergeDesignOutputs()` flow but per artefact. PR4 default-on: designer skill
- * packs now write the contribution natively. The DESIGN.md fallback path
- * remains as a safety net for code-only mode, single-designer pipelines, or
- * any designer that hasn't been updated yet.
+ * merges them at the end of the parallel-design step. Designer skill packs
+ * are expected to write these contributions natively.
  */
 import { promises as fs } from "fs";
 import * as path from "path";
@@ -117,9 +115,6 @@ export async function appendClarifications(
 
 /**
  * Merge per-designer `.pipeline/<agent>-spec.md` files into spec.md.
- * Falls back to using the merged DESIGN.md as the spec body when no per-designer
- * spec contributions exist (PR1 transition: designer prompts may not yet write
- * per-artefact files; in that case the v2 spec.md duplicates the design body).
  */
 export async function mergeSpecContributions(
   workDir: string,
@@ -143,28 +138,14 @@ export async function mergeSpecContributions(
     }
   }
 
-  let body: string;
-  if (contributions.length > 0) {
-    body = contributions
-      .map((c) => `## ${c.agent}\n\n${c.content.trim()}`)
-      .join("\n\n---\n\n");
-  } else {
-    // Transitional fallback: derive spec body from DESIGN.md if present.
-    try {
-      const design = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
-      // Strip the existing "Original task" header — writeSpecMd will re-add it.
-      const stripped = design.replace(/^## Original task[\s\S]*?\n---\n/, "").trim();
-      body = stripped || design.trim();
-      if (body) sources.push("DESIGN.md (fallback)");
-    } catch {
-      body = "";
-    }
-  }
-
-  if (!body.trim()) {
-    log.info("No spec contributions and no DESIGN.md fallback; spec.md not written", undefined, "flow");
+  if (contributions.length === 0) {
+    log.info("No spec contributions; spec.md not written", undefined, "flow");
     return { merged: false, sources };
   }
+
+  const body = contributions
+    .map((c) => `## ${c.agent}\n\n${c.content.trim()}`)
+    .join("\n\n---\n\n");
 
   await writeSpecMd(workDir, originalTask, body);
   log.info(`Merged spec contributions from ${sources.length} source(s): ${sources.join(", ")}`, undefined, "flow");

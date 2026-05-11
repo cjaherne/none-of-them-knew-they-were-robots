@@ -19,7 +19,7 @@ Treat updates to **merge-to-main** behaviour as three-way: the skill file, [`ski
 
 1. Set **workspace / repo / branches** in the sidebar (when not using ephemeral temp workspace).
 2. Type the task in **Command**, choose **pipeline mode**, toggle approvals as needed.
-3. Watch **Live** tab: stages, logs, overseer lines; use **Artefacts** tab (v2) to read `spec.md` / `plan.md` / `TASKS.md` / `CHECKLISTS.md` as they land.
+3. Watch **Live** tab: stages, logs, overseer lines; use **Artefacts** tab to read `spec.md` / `plan.md` / `TASKS.md` / `CHECKLISTS.md` as they land.
 4. Respond to **approval banners** when requirements/design/feedback/checklist-blocking gates fire.
 
 **Why it is default-friendly:** no browser permissions, reproducible transcripts in logs.
@@ -66,7 +66,7 @@ This repo **does not** implement billing, seat management, or org-wide usage das
 
 ## Latency levers (what makes pipelines feel slow)
 
-- **Number of stages** — full + parallel design + v2 clarify/analyze/checklist + validation is intentionally thorough.
+- **Number of stages** — full + parallel design + clarify/analyze/checklist + validation is intentionally thorough.
 - **Agent round-trips** — each stage is a fresh `agent` invocation unless resumed via session registry.
 - **OpenAI calls** — BigBoss, merge, overseer, checklist, optional image passes add wall-clock even when agents are fast.
 - **Git operations** — clone/fetch/checkout in `setupWorkspace` on cold workspaces.

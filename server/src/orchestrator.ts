@@ -13,30 +13,23 @@ import {
   AgentRunConfig,
   AgentRunResult,
 } from "./agent-runner";
-import { createCursorSessionRegistry, type CursorSessionRegistry } from "./cursor-session-registry";
+import { createCursorSessionRegistry } from "./cursor-session-registry";
 import { loadOrBuildCache, getCacheBrief } from "./context-cache";
 import { parseCodingNotes, shouldLoopOnFeedback } from "./feedback-criteria";
 import {
   planWithBigBoss,
   bigBossSummarize,
-  overseerPostDesignReview,
-  overseerPostCodeReview,
   getBigBossModel,
-  getMergeModel,
   MAX_OVERSEER_DESIGN_ITERATIONS,
-  MAX_OVERSEER_CODE_ITERATIONS,
   MAX_LOVE_TEST_FIX_ITERATIONS,
   type BigBossResult,
 } from "./bigboss-director";
 import {
   generateRequirementsArtifact,
   appendRequirementsUserRevision,
-  ensureDesignReferencesRequirements,
-  runLoveSmokeChecklistOpenAI,
 } from "./requirements-artifact";
 import { bootstrapConstitutionFromTask } from "./constitution-artifact";
 import { writeTasksMd } from "./tasks-artifact";
-import { isArtefactSchemaV2 } from "./artefact-schema";
 import { mergeSpecContributions } from "./spec-artifact";
 import {
   mergePlanContributions,
@@ -69,25 +62,6 @@ import {
  * the cap, the banner drops the "Re-run analyze" button.
  */
 const MAX_CHECKLIST_REANALYZE_REWINDS = 1;
-
-/** Placeholder upstream row when a parallel designer is skipped on a targeted gaps re-run (file on disk retained). */
-function syntheticRetainedDesignResult(agent: string): AgentRunResult {
-  return {
-    agent,
-    success: true,
-    output: "",
-    parsed: {
-      assistantMessage: "",
-      filesWritten: [],
-      shellCommands: [],
-      errors: [],
-      tokenUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 },
-    },
-    filesModified: [],
-    errors: [],
-    durationMs: 0,
-  };
-}
 
 /**
  * When Overseer gaps map to a non-empty proper subset of parallel designers, re-run only those agents.
@@ -125,150 +99,30 @@ function spliceParallelUpstreamForRerun(
   }
 }
 
-function normaliseOverseerFocusPaths(raw: unknown): string[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((p): p is string => typeof p === "string" && p.trim().length > 0)
-    .map((p) => p.trim())
-    .slice(0, 25);
-}
-
-function formatOverseerFocusPaths(paths: string[]): string {
-  if (paths.length === 0) return "";
-  const lines = paths.map((p) => `- ${p}`);
-  return `\n\nPrefer edits under these paths (repo-relative):\n${lines.join("\n")}`;
-}
-
-function prependOriginalTaskToDesign(workDir: string, designContent: string, originalTask: string): string {
-  const header = "## Original task (source of truth)\n\n" + originalTask.trim() + "\n\n---\n\n";
-  return header + designContent;
-}
-
-async function mergeDesignOutputs(
-  workDir: string,
-  results: AgentRunResult[],
-  sessionRegistry: CursorSessionRegistry,
-  originalTask?: string,
-  skillsRoot?: string,
-  pipelineId?: string,
-  signal?: AbortSignal,
-): Promise<void> {
-  const designFiles: Array<{ agent: string; content: string }> = [];
-
-  for (const r of results) {
-    const agentDesignPath = path.join(workDir, ".pipeline", `${r.agent}-design.md`);
-    try {
-      const content = await fs.readFile(agentDesignPath, "utf-8");
-      if (content.trim()) {
-        designFiles.push({ agent: r.agent, content });
-      }
-    } catch {
-      /* agent didn't produce a per-agent design file */
-    }
-  }
-
-  if (designFiles.length === 0) {
-    try {
-      const content = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
-      if (content.trim()) {
-        designFiles.push({ agent: "design", content });
-      }
-    } catch {
-      /* no design output at all */
-    }
-  }
-
-  const writeDesign = async (content: string) => {
-    const final = originalTask ? prependOriginalTaskToDesign(workDir, content, originalTask) : content;
-    await fs.writeFile(path.join(workDir, "DESIGN.md"), final, "utf-8");
-  };
-
-  if (designFiles.length <= 1) {
-    if (designFiles.length === 1) {
-      await writeDesign(designFiles[0].content);
-    }
-    return;
-  }
-
-  if (skillsRoot && pipelineId && originalTask) {
-    const bigBossSession = await sessionRegistry.getOrCreate("bigboss");
-    const agentMerged = await mergeDesignWithAgent(
-      workDir, designFiles, originalTask, skillsRoot, pipelineId, signal, bigBossSession,
-    );
-    if (agentMerged) return;
-    createLogger("orchestrator").info("Agent-based merge failed, falling back to API merge", undefined, "flow");
-  }
-
-  if (process.env.OPENAI_API_KEY) {
-    try {
-      const { default: OpenAI } = await import("openai");
-      const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-      const inputs = designFiles.map((d) =>
-        `## ${d.agent} design\n${d.content.slice(0, 16000)}`,
-      ).join("\n\n---\n\n");
-
-      const mergeModel = getMergeModel();
-      const response = await client.chat.completions.create({
-        model: mergeModel,
-        messages: [
-          {
-            role: "system",
-            content: "You are merging multiple design documents from parallel agents into a single unified DESIGN.md. Combine all sections, resolve conflicts by preferring the more specific/detailed version, and produce a coherent document. Maintain markdown formatting. Preserve every requirement from the source documents; do not drop items from requirements checklists or from bullet lists. If documents have a requirementsChecklist or similar section, include it in full in the merged DESIGN.md.",
-          },
-          { role: "user", content: inputs },
-        ],
-        max_tokens: 8192,
-        temperature: 0.2,
-      });
-
-      const merged = response.choices[0]?.message?.content;
-      if (merged) {
-        await writeDesign(merged);
-        createLogger("orchestrator").info(`Merged ${designFiles.length} design documents via OpenAI (${mergeModel})`, undefined, "flow");
-        return;
-      }
-    } catch (err) {
-      createLogger("orchestrator").warn("OpenAI merge failed, using concatenation", { err: String(err) });
-    }
-  }
-
-  const concatenated = designFiles.map((d) =>
-    `# ${d.agent} Design\n\n${d.content}`,
-  ).join("\n\n---\n\n");
-  await writeDesign(concatenated);
-  createLogger("orchestrator").info(`Concatenated ${designFiles.length} design documents`, undefined, "flow");
-}
-
-async function readDesignPreview(workDir: string): Promise<string> {
-  try {
-    const content = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
-    return content.slice(0, 8000);
-  } catch {
-    return "";
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Spec-kit Tier 2 PR1 — v2 artefact writers (gated by ARTEFACT_SCHEMA=v2)
-// ---------------------------------------------------------------------------
-
 /**
- * Run the v2 artefact writers (spec.md, plan.md, optional research.md /
- * data-model.md / contracts/, plus CHECKLISTS.md) in addition to today's
- * DESIGN.md. No-op when ARTEFACT_SCHEMA=v1 (the explicit opt-out).
- *
- * PR4 default flip: ARTEFACT_SCHEMA defaults to v2. Designer skill packs now
- * write per-artefact `.pipeline/<agent>-spec.md` / `.pipeline/<agent>-plan.md`
- * contributions natively. mergeSpecContributions / mergePlanContributions
- * still fall back to deriving from the merged DESIGN.md when a designer hasn't
- * produced its contribution (older skill packs, code-only mode, etc.) so the
- * v2 artefacts always appear in the workspace.
- *
- * DESIGN.md is left untouched here — the existing parallel-design merge
- * continues to write it for back-compat with Overseer prompts and coding-agent
- * fallbacks until a follow-up PR retires the v1 paths entirely.
+ * Read the merged spec.md + plan.md as a single preview for design-approval
+ * banners. Falls back to whichever exists if only one is present; returns
+ * an empty string when neither has been written yet.
  */
+async function readDesignPreview(workDir: string): Promise<string> {
+  let spec = "";
+  let plan = "";
+  try { spec = await fs.readFile(path.join(workDir, "spec.md"), "utf-8"); } catch { /* not yet */ }
+  try { plan = await fs.readFile(path.join(workDir, "plan.md"), "utf-8"); } catch { /* not yet */ }
+  if (!spec.trim() && !plan.trim()) return "";
+  const cap = 4000;
+  const parts: string[] = [];
+  if (spec.trim()) parts.push(`## spec.md\n\n${spec.slice(0, cap)}`);
+  if (plan.trim()) parts.push(`## plan.md\n\n${plan.slice(0, cap)}`);
+  return parts.join("\n\n---\n\n");
+}
+
+// ---------------------------------------------------------------------------
+// Artefact writers — spec.md / plan.md / research.md / data-model.md /
+// contracts/ / CHECKLISTS.md from per-designer `.pipeline/<agent>-spec.md`
+// and `.pipeline/<agent>-plan.md` contributions.
+// ---------------------------------------------------------------------------
+
 async function runV2ArtefactWriters(
   taskId: string,
   workDir: string,
@@ -276,8 +130,7 @@ async function runV2ArtefactWriters(
   originalTask: string,
   stack: PipelineStack,
 ): Promise<void> {
-  if (!isArtefactSchemaV2()) return;
-  const log = createLogger("artefact-v2");
+  const log = createLogger("artefacts");
   try {
     const specResult = await mergeSpecContributions(workDir, agents, originalTask);
     if (specResult.merged) {
@@ -452,8 +305,12 @@ async function decomposeTask(
   const log = createLogger("task-decomp");
 
   try {
-    const designContent = await fs.readFile(path.join(workDir, "DESIGN.md"), "utf-8");
-    const designSlice = designContent.slice(0, 16000);
+    let specSlice = "";
+    let planSlice = "";
+    try { specSlice = (await fs.readFile(path.join(workDir, "spec.md"), "utf-8")).slice(0, 12000); } catch { /* missing */ }
+    try { planSlice = (await fs.readFile(path.join(workDir, "plan.md"), "utf-8"))  .slice(0, 8000); } catch { /* missing */ }
+    if (!specSlice.trim() && !planSlice.trim()) return null;
+
     let requirementsSlice = "";
     try {
       requirementsSlice = (await fs.readFile(path.join(workDir, "REQUIREMENTS.md"), "utf-8")).slice(0, 4000);
@@ -465,7 +322,7 @@ async function decomposeTask(
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const model = getBigBossModel();
 
-    const loveSystem = `You decompose complex LÖVE2D / Lua game tasks into ${MAX_SUB_TASKS} sequential coding sub-tasks. Each sub-task builds on the previous one's output. The coder receives the full DESIGN.md (and REQUIREMENTS.md if present) on disk — specify what to implement each pass, do not paste the whole design.
+    const loveSystem = `You decompose complex LÖVE2D / Lua game tasks into ${MAX_SUB_TASKS} sequential coding sub-tasks. Each sub-task builds on the previous one's output. The coder receives the full spec.md and plan.md (and REQUIREMENTS.md if present) on disk — specify what to implement each pass, do not paste the whole spec or plan.
 
 Respond with JSON: { "subTasks": ["task 1 instructions", "task 2 instructions", "task 3 instructions"] }
 
@@ -474,9 +331,9 @@ LÖVE ordering (gameplay before chrome):
 - Sub-task 2: Map / procedural rules, weapons, damage, turns or core loop, second-player input if required by design.
 - Sub-task 3: HUD, polish, distinct readability for projectiles/characters (sprites, VFX, trails), extra input modes only after primary mode works.
 
-Each sub-task must leave the game runnable. Reference DESIGN.md on disk for detail.`;
+Each sub-task must leave the game runnable. Reference spec.md and plan.md on disk for detail.`;
 
-    const webSystem = `You decompose complex game/application tasks into ${MAX_SUB_TASKS} sequential coding sub-tasks. Each sub-task builds on the previous one's output. The coder receives the full DESIGN.md on disk, so do not repeat the design -- just specify what to implement in each pass.
+    const webSystem = `You decompose complex game/application tasks into ${MAX_SUB_TASKS} sequential coding sub-tasks. Each sub-task builds on the previous one's output. The coder receives the full spec.md and plan.md on disk, so do not repeat them -- just specify what to implement in each pass.
 
 Respond with JSON: { "subTasks": ["task 1 instructions", "task 2 instructions", "task 3 instructions"] }
 
@@ -485,9 +342,11 @@ Guidelines:
 - Sub-task 2: Main gameplay/feature implementation, entities, game logic, UI screens  
 - Sub-task 3: Polish -- audio, visual effects, edge cases, input handling refinement, final integration
 - Each sub-task must be self-contained and produce working code
-- Reference the DESIGN.md for details (the coder will read it from disk)`;
+- Reference spec.md and plan.md for details (the coder will read them from disk)`;
 
-    const userParts = [`## Original task\n\n${originalTask.slice(0, 6000)}`, `## Design summary\n\n${designSlice}`];
+    const userParts: string[] = [`## Original task\n\n${originalTask.slice(0, 6000)}`];
+    if (specSlice.trim()) userParts.push(`## spec.md (excerpt)\n\n${specSlice}`);
+    if (planSlice.trim()) userParts.push(`## plan.md (excerpt)\n\n${planSlice}`);
     if (requirementsSlice.trim()) {
       userParts.push(`## REQUIREMENTS.md (excerpt)\n\n${requirementsSlice}`);
     }
@@ -518,73 +377,6 @@ Guidelines:
   } catch (err) {
     log.warn("Task decomposition failed", { err: String(err) }, "flow");
     return null;
-  }
-}
-
-async function mergeDesignWithAgent(
-  workDir: string,
-  designFiles: Array<{ agent: string; content: string }>,
-  originalTask: string,
-  skillsRoot: string,
-  pipelineId: string,
-  signal?: AbortSignal,
-  cursorSessionId?: string | null,
-): Promise<boolean> {
-  const log = createLogger("design-merge");
-
-  const fileList = designFiles.map((d) => `.pipeline/${d.agent}-design.md`).join(", ");
-  const agentPrompt = `Merge the following parallel design documents into a single unified DESIGN.md:
-${fileList}
-
-Read each file from disk using your filesystem tool. Combine all sections, resolve conflicts
-by preferring the more specific/detailed version, and produce a coherent DESIGN.md file.
-
-CRITICAL: Preserve EVERY requirement from ALL source documents. Do not drop items from
-requirements checklists or bullet lists. If documents have a requirementsChecklist or
-similar section, include ALL items in the merged output.
-
-Write the merged result to DESIGN.md in the workspace root.
-
-## Original task (include this at the top of DESIGN.md)
-
-${originalTask}`;
-
-  try {
-    const config: AgentRunConfig = {
-      agentType: "bigboss",
-      category: "coding",
-      prompt: agentPrompt,
-      pipelineId,
-      skillsRoot,
-      baseBranch: "main",
-      branch: "design-merge",
-      workspaceReady: true,
-      trivial: true,
-      cursorSessionId,
-    };
-
-    log.info(`Running agent-based design merge for ${designFiles.length} files`, undefined, "flow");
-    const result = await runAgent(config, workDir, undefined, signal);
-    if (result.success) {
-      try {
-        const designPath = path.join(workDir, "DESIGN.md");
-        let content = await fs.readFile(designPath, "utf-8");
-        if (!content.startsWith("## Original task")) {
-          content = prependOriginalTaskToDesign(workDir, content, originalTask);
-          await fs.writeFile(designPath, content, "utf-8");
-        }
-        log.info("Agent-based design merge succeeded", undefined, "flow");
-        return true;
-      } catch {
-        log.warn("Agent merge ran but DESIGN.md not found or unreadable", undefined, "flow");
-        return false;
-      }
-    }
-    log.warn("Agent-based design merge failed", undefined, "flow");
-    return false;
-  } catch (err) {
-    log.warn("Agent-based design merge error", { err: String(err) }, "flow");
-    return false;
   }
 }
 
@@ -726,14 +518,12 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
     log.info("Pipeline includes post-design game-art stage (LÖVE + OPENAI_API_KEY)", undefined, "flow");
   }
 
-  // Spec-kit Tier 2 PR2 — promote the inline overseer reviews into discrete
-  // `clarify` (post-design) and `analyze` (post-coding) stages when v2.
-  // Idempotent and no-op for v1; CHECKLIST_STAGE waits for PR3.
-  if (isArtefactSchemaV2()) {
-    stages = injectV2OverseerStages(stages);
-    if (stages.some((s) => s.category === "clarify" || s.category === "analyze")) {
-      log.info("Pipeline includes spec-kit v2 overseer stages (clarify/analyze)", undefined, "flow");
-    }
+  // Discrete Overseer sub-stages: `clarify` after the last design, `analyze`
+  // after the last coding, `checklist` after analyze. Idempotent — no-op when
+  // the stage list has no design/coding categories to anchor against.
+  stages = injectV2OverseerStages(stages);
+  if (stages.some((s) => s.category === "clarify" || s.category === "analyze")) {
+    log.info("Pipeline includes overseer stages (clarify/analyze/checklist)", undefined, "flow");
   }
 
   stages = [...stages, RELEASE_STAGE];
@@ -770,10 +560,6 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
    */
   let checklistReanalyzeRewinds = 0;
   let loveTestFixIterations = 0;
-  /** Single-shot guard so the LOVE_SMOKE_CHECKLIST deprecation note is logged once per pipeline. */
-  let loveSmokeDeprecationWarned = false;
-  /** After Overseer design gaps: if non-null, next parallel design pass re-runs only these agent ids (subset of group). */
-  let pendingPartialDesignRerun: string[] | null = null;
   let feedbackFingerprint: string | undefined;
   let groupIndex = 0;
 
@@ -788,22 +574,8 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
 
     if (group.parallel && group.stageDefs.length > 1) {
       const agentsInGroup = group.stageDefs.map((s) => s.agent);
-      let effectiveRerunAgents: string[];
-      if (pendingPartialDesignRerun !== null) {
-        const filtered = pendingPartialDesignRerun.filter((a) => agentsInGroup.includes(a));
-        effectiveRerunAgents = filtered.length > 0 ? filtered : agentsInGroup;
-        pendingPartialDesignRerun = null;
-      } else {
-        effectiveRerunAgents = agentsInGroup;
-      }
+      const effectiveRerunAgents: string[] = agentsInGroup;
       const rerunSet = new Set(effectiveRerunAgents);
-
-      if (effectiveRerunAgents.length < agentsInGroup.length) {
-        taskStore.emit_log(
-          task.id,
-          `Overseer design gaps: re-running only ${effectiveRerunAgents.join(", ")} (other designers’ .pipeline outputs kept).`,
-        );
-      }
       log.info(
         `Parallel group: ${group.stageDefs.map((s) => s.name).join(", ")}; executing ${effectiveRerunAgents.join(", ")}`,
         { agents: agentsInGroup },
@@ -872,10 +644,6 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
       }
 
       const freshByAgent = new Map(stagesToRun.map((s, i) => [s.agent, freshResults[i]] as const));
-      const parallelResultsOrdered: AgentRunResult[] = group.stageDefs.map((stage) => {
-        const r = freshByAgent.get(stage.agent);
-        return r ?? syntheticRetainedDesignResult(stage.agent);
-      });
 
       for (const stage of group.stageDefs) {
         if (!rerunSet.has(stage.agent)) continue;
@@ -915,11 +683,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
       }
 
       if (group.stageDefs[0]?.category === "design" && group.stageDefs.length > 1) {
-        taskStore.emit_log(task.id, `Merging ${group.stageDefs.length} design documents…`);
-        await mergeDesignOutputs(workDir, parallelResultsOrdered, sessionRegistry, task.prompt, skillsRoot, task.id, signal);
-        taskStore.emit_log(task.id, `Merged ${group.stageDefs.length} design documents`);
-        await ensureDesignReferencesRequirements(workDir);
-
+        taskStore.emit_log(task.id, `Merging ${group.stageDefs.length} design contributions into spec.md / plan.md…`);
         await runV2ArtefactWriters(
           task.id,
           workDir,
@@ -940,110 +704,8 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
           log.warn("TASKS.md generation failed (non-fatal)", { err: String(err) });
         }
 
-        // v2 splits this into a separate `clarify` stage (inserted by
-        // injectV2OverseerStages); skip the inline review when v2 is on so the
-        // overseer call only fires once per pipeline.
-        if (isArtefactSchemaV2()) {
-          // v2: design approval happens after the clarify stage so the user sees the
-          // overseer's findings; nothing more to do here. Note the existing approval
-          // block below is also gated on v1.
-        } else {
-        taskStore.emit_overseer_log(task.id, "BigBoss (Overseer): design review — comparing merged design to requirements…", {
-          phase: "design-review",
-          status: "running",
-        });
-        const designReview = await overseerPostDesignReview(
-          workDir,
-          task.prompt,
-          skillsRoot,
-          task.id,
-          await sessionRegistry.getOrCreate("bigboss"),
-          signal,
-          { stack: pipelineStack },
-        );
-        taskStore.emit_overseer_log(
-          task.id,
-          designReview?.fit === "ok"
-            ? "BigBoss (Overseer): design fits requirements."
-            : designReview?.fit === "gaps"
-              ? "BigBoss (Overseer): design gaps found; re-running affected designer(s)."
-              : "BigBoss (Overseer): design review complete.",
-          { phase: "design-review", status: "done", result: designReview?.fit === "ok" ? "ok" : designReview?.fit === "gaps" ? "gaps" : undefined },
-        );
-        if (designReview?.fit === "gaps" && designReviewIterations < MAX_OVERSEER_DESIGN_ITERATIONS) {
-          designReviewIterations++;
-          designFeedbackByAgent = undefined;
-          let cleanedGapsByAgent: Record<string, string> | undefined;
-          const rawByAgent = designReview.gapsByAgent;
-          if (rawByAgent && typeof rawByAgent === "object") {
-            const cleaned: Record<string, string> = {};
-            for (const [k, v] of Object.entries(rawByAgent)) {
-              if (typeof v === "string" && v.trim()) cleaned[k] = v.trim();
-            }
-            if (Object.keys(cleaned).length > 0) {
-              designFeedbackByAgent = cleaned;
-              cleanedGapsByAgent = cleaned;
-            }
-          }
-          const partialAgents = computePartialDesignRerunAgents(group.stageDefs, cleanedGapsByAgent);
-          pendingPartialDesignRerun = partialAgents;
-          designFeedback = designReview.suggestedSubTask?.prompt
-            ? `Overseer found design gaps; address these in your design:\n${designReview.suggestedSubTask.prompt}`
-            : `Overseer found design gaps: ${(designReview.gaps || []).join("; ")}`;
-          const gapList = (designReview.gaps || []).slice(0, 5).join("; ");
-          const gapDetail = gapList ? ` Gaps: ${gapList}${(designReview.gaps?.length ?? 0) > 5 ? "…" : ""}` : "";
-          const rerunLabel =
-            partialAgents && partialAgents.length < group.stageDefs.length
-              ? `Re-running designers: ${partialAgents.join(", ")}`
-              : "Re-running all parallel designers";
-          taskStore.emit_log(
-            task.id,
-            `Overseer design gaps (iteration ${designReviewIterations}). ${rerunLabel}.${gapDetail}`,
-          );
-          log.info("Overseer design gaps: scheduling designer re-run", { gaps: designReview.gaps, partialAgents }, "flow");
-          const agentsToSplice = new Set(
-            partialAgents && partialAgents.length > 0 ? partialAgents : group.stageDefs.map((s) => s.agent),
-          );
-          spliceParallelUpstreamForRerun(upstreamResults, group.stageDefs, agentsToSplice);
-          for (const s of group.stageDefs) {
-            if (agentsToSplice.has(s.agent)) {
-              taskStore.updateStage(task.id, s.name, { status: "pending" as const });
-            }
-          }
-          continue;
-        } else if (designReview?.fit === "ok") {
-          taskStore.emit_log(task.id, "Overseer design review: design fits requirements.");
-        }
-
-        if (task.requireDesignApproval) {
-          const summary = await bigBossSummarize(workDir, "DESIGN.md", "design", skillsRoot);
-          const designPreview = await readDesignPreview(workDir);
-          log.info("Design approval requested (post-merge)", undefined, "flow");
-
-          const approval: ApprovalResponse = await taskStore.requestApproval(
-            task.id, summary, { approvalType: "design", designPreview },
-          );
-
-          if (signal.aborted) { taskStore.cleanupAbort(task.id); return; }
-
-          if (approval.action === "reject") {
-            taskStore.updateTaskStatus(task.id, TaskStatus.Failed, "Design rejected by user");
-            taskStore.cleanupAbort(task.id);
-            return;
-          }
-
-          if (approval.action === "revise" && designLoops < MAX_DESIGN_LOOPS) {
-            designLoops++;
-            designFeedbackByAgent = undefined;
-            designFeedback = approval.feedback || "User requested design changes.";
-            taskStore.emit_log(task.id, `Design revision ${designLoops}: ${designFeedback}`);
-            for (const s of group.stageDefs) {
-              taskStore.updateStage(task.id, s.name, { status: "pending" as const });
-            }
-            continue;
-          }
-        }
-        } // end of v1 inline overseer + approval block (gated by !isArtefactSchemaV2())
+        // Design approval after parallel merge runs in the `clarify` stage
+        // dispatch below — the user sees overseer findings before approving.
       }
     } else {
       const stage = group.stageDefs[0];
@@ -1160,9 +822,9 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
         // user sees the spec/plan AFTER the overseer has reviewed and appended any
         // clarifications. Mirrors the v1 inline approval block.
         if (task.requireDesignApproval) {
-          const summary = await bigBossSummarize(workDir, "DESIGN.md", "design", skillsRoot);
+          const summary = await bigBossSummarize(workDir, "spec.md", "design", skillsRoot);
           const designPreview = await readDesignPreview(workDir);
-          log.info("Design approval requested (post-clarify, v2)", undefined, "flow");
+          log.info("Design approval requested (post-clarify)", undefined, "flow");
 
           const approval: ApprovalResponse = await taskStore.requestApproval(
             task.id, summary, { approvalType: "design", designPreview },
@@ -1262,13 +924,11 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
         continue;
       }
 
-      // Spec-kit Tier 2 PR3 — `checklist` stage dispatch (v2 only). Replaces
-      // the legacy LOVE_SMOKE_CHECKLIST=1 env path with a stack-agnostic
-      // read-only review of CHECKLISTS.md (PR1 artefact). On `incomplete`,
-      // hands off to a single coding fix-up (cap MAX_CHECKLIST_FIX_ITERATIONS
-      // = 1). When CHECKLIST_BLOCKING=1 is set and the final state is
-      // `incomplete`, the pipeline is failed; otherwise advisory-only
-      // (matches plan §12 Q4).
+      // `checklist` stage dispatch — stack-agnostic read-only review of
+      // CHECKLISTS.md. On `incomplete`, hands off to a single coding fix-up
+      // (cap MAX_CHECKLIST_FIX_ITERATIONS = 1). When CHECKLIST_BLOCKING=1 is
+      // set and the final state is `incomplete`, the pipeline is failed;
+      // otherwise advisory-only.
       if (stage.category === "checklist") {
         const stageStart = new Date().toISOString();
         taskStore.updateStage(task.id, stage.name, { status: "running", startedAt: stageStart });
@@ -1555,18 +1215,6 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
           log.info(`Stage ${stage.name} completed: ${result.filesModified?.length ?? 0} files, ${(result.durationMs / 1000).toFixed(1)}s, $${result.estimatedCost?.toFixed(4) ?? "N/A"}`, { stage: stage.name, files: result.filesModified?.length ?? 0, durationMs: result.durationMs, cost: result.estimatedCost }, "output");
 
           if (stage.category === "design" && result.success) {
-            try {
-              const designPath = path.join(workDir, "DESIGN.md");
-              let content = await fs.readFile(designPath, "utf-8");
-              if (content && !content.startsWith("## Original task")) {
-                content = prependOriginalTaskToDesign(workDir, content, task.prompt);
-                await fs.writeFile(designPath, content, "utf-8");
-              }
-            } catch {
-              /* DESIGN.md may not exist yet */
-            }
-            await ensureDesignReferencesRequirements(workDir);
-
             await runV2ArtefactWriters(
               task.id,
               workDir,
@@ -1589,7 +1237,7 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
           }
 
           if (stage.category === "design" && task.requireDesignApproval) {
-            const summary = await bigBossSummarize(workDir, "DESIGN.md", "design", skillsRoot);
+            const summary = await bigBossSummarize(workDir, "spec.md", "design", skillsRoot);
             const designPreview = await readDesignPreview(workDir);
             log.info("Design approval requested", undefined, "flow");
 
@@ -1689,157 +1337,9 @@ export async function runPipeline(task: RuntimeTask): Promise<void> {
             }
           }
 
-          // v2 splits this block into a discrete `analyze` stage (inserted by
-          // injectV2OverseerStages); skip the inline review when v2 is on so the
-          // overseer call only fires once per pipeline.
-          if (!isArtefactSchemaV2() && stage.category === "coding" && result.success && codeReviewIterations < MAX_OVERSEER_CODE_ITERATIONS) {
-            taskStore.emit_overseer_log(task.id, "BigBoss (Overseer): reviewing code against design and requirements…", {
-              phase: "code-review",
-              status: "running",
-            });
-            const codeReview = await overseerPostCodeReview(
-              workDir,
-              task.prompt,
-              skillsRoot,
-              task.id,
-              await sessionRegistry.getOrCreate("bigboss"),
-              signal,
-              { stack: pipelineStack },
-            );
-            taskStore.emit_overseer_log(
-              task.id,
-              codeReview?.fit === "ok"
-                ? "BigBoss (Overseer): implementation fits design and requirements."
-                : codeReview?.fit === "drift"
-                  ? "BigBoss (Overseer): code drift found; running coder fix-up pass."
-                  : "BigBoss (Overseer): code review complete.",
-              { phase: "code-review", status: "done", result: codeReview?.fit === "ok" ? "ok" : codeReview?.fit === "drift" ? "drift" : undefined },
-            );
-            if (codeReview?.fit === "drift" && codeReview.suggestedSubTask?.prompt) {
-              codeReviewIterations++;
-              taskStore.emit_log(
-                task.id,
-                `Overseer code review: code drift found. Running coder fix-up (${codeReviewIterations}/${MAX_OVERSEER_CODE_ITERATIONS}).`,
-              );
-              log.info("Overseer code review: re-running coder for drift", { missingOrWrong: codeReview.missingOrWrong }, "flow");
-              const focusPaths = normaliseOverseerFocusPaths(codeReview.focusPaths);
-              const focusBlock = formatOverseerFocusPaths(focusPaths);
-              const overseerFixSessionId = await sessionRegistry.getOrCreate(stage.agent);
-              const overseerConfig: AgentRunConfig = {
-                ...baseConfig,
-                prompt: `${task.prompt}\n\n## Overseer code review (code drift)${focusBlock}\n\n${codeReview.suggestedSubTask.prompt}`,
-                agentType: stage.agent,
-                category: "coding",
-                workspaceReady: true,
-                trivial: isTrivial,
-                complexity,
-                upstreamResults: [...upstreamResults],
-                agentBrief: agentBriefs[stage.agent] ?? null,
-                cursorSessionId: overseerFixSessionId,
-              };
-              const overseerResult = await runAgent(overseerConfig, workDir, undefined, signal);
-              upstreamResults.push(overseerResult);
-              if (overseerResult.success) {
-                taskStore.emit_log(task.id, `Overseer code drift fix-up completed: ${overseerResult.filesModified?.length ?? 0} files.`);
-              }
-
-              if (overseerResult.success && codeReviewIterations < MAX_OVERSEER_CODE_ITERATIONS) {
-                taskStore.emit_overseer_log(task.id, "BigBoss (Overseer): re-checking code after drift fix-up…", {
-                  phase: "code-review",
-                  status: "running",
-                });
-                const recheck = await overseerPostCodeReview(
-                  workDir,
-                  task.prompt,
-                  skillsRoot,
-                  task.id,
-                  await sessionRegistry.getOrCreate("bigboss"),
-                  signal,
-                  { stack: pipelineStack },
-                );
-                taskStore.emit_overseer_log(
-                  task.id,
-                  recheck?.fit === "ok"
-                    ? "BigBoss (Overseer): post-fix code review OK."
-                    : recheck?.fit === "drift"
-                      ? "BigBoss (Overseer): code drift remains after fix-up; second fix-up if budget allows."
-                      : "BigBoss (Overseer): post-fix code review complete.",
-                  { phase: "code-review", status: "done", result: recheck?.fit === "ok" ? "ok" : recheck?.fit === "drift" ? "drift" : undefined },
-                );
-                if (recheck?.fit === "drift" && recheck.suggestedSubTask?.prompt && codeReviewIterations < MAX_OVERSEER_CODE_ITERATIONS) {
-                  codeReviewIterations++;
-                  const recheckFocus = normaliseOverseerFocusPaths(recheck.focusPaths);
-                  const recheckFocusBlock = formatOverseerFocusPaths(recheckFocus);
-                  const secondFixSessionId = await sessionRegistry.getOrCreate(stage.agent);
-                  const secondFixConfig: AgentRunConfig = {
-                    ...baseConfig,
-                    prompt: `${task.prompt}\n\n## Overseer code review (code drift, follow-up)${recheckFocusBlock}\n\n${recheck.suggestedSubTask.prompt}`,
-                    agentType: stage.agent,
-                    category: "coding",
-                    workspaceReady: true,
-                    trivial: isTrivial,
-                    complexity,
-                    upstreamResults: [...upstreamResults],
-                    agentBrief: agentBriefs[stage.agent] ?? null,
-                    cursorSessionId: secondFixSessionId,
-                  };
-                  taskStore.emit_log(
-                    task.id,
-                    `Overseer: second code drift fix-up (${codeReviewIterations}/${MAX_OVERSEER_CODE_ITERATIONS}).`,
-                  );
-                  const secondResult = await runAgent(secondFixConfig, workDir, undefined, signal);
-                  upstreamResults.push(secondResult);
-                  if (secondResult.success) {
-                    taskStore.emit_log(
-                      task.id,
-                      `Second drift fix-up completed: ${secondResult.filesModified?.length ?? 0} files.`,
-                    );
-                  }
-                }
-              }
-            } else if (codeReview?.fit === "ok") {
-              taskStore.emit_log(task.id, "Overseer code review: implementation fits design and task.");
-            }
-          }
-
-          // Spec-kit Tier 2 PR3 — LOVE_SMOKE_CHECKLIST is deprecated. v2 runs
-          // the stack-agnostic `checklist` stage automatically (which inherits
-          // OVERSEER_LOVE_CODE_CHECKLIST bullets for LÖVE). The legacy env
-          // path remains here for v1 compat only; emits a deprecation warning
-          // when set so users have time to migrate.
-          if (
-            stage.category === "coding" &&
-            result.success &&
-            pipelineStack === "love" &&
-            process.env.LOVE_SMOKE_CHECKLIST === "1"
-          ) {
-            if (isArtefactSchemaV2()) {
-              if (!loveSmokeDeprecationWarned) {
-                loveSmokeDeprecationWarned = true;
-                log.warn(
-                  "LOVE_SMOKE_CHECKLIST is deprecated; CHECKLISTS.md is generated automatically when ARTEFACT_SCHEMA=v2. Skipping legacy LÖVE smoke pass.",
-                  undefined,
-                  "flow",
-                );
-                taskStore.emit_log(
-                  task.id,
-                  "LOVE_SMOKE_CHECKLIST is deprecated; the v2 `checklist` stage covers this and more. Unset the env var to silence this warning.",
-                );
-              }
-            } else {
-              const smoke = await runLoveSmokeChecklistOpenAI(workDir, task.prompt);
-              if (smoke) {
-                taskStore.emit_log(
-                  task.id,
-                  `LÖVE smoke checklist: ${JSON.stringify({
-                    movementOk: smoke.movementOk,
-                    persistenceOk: smoke.persistenceOk,
-                    issues: smoke.issues,
-                  })}`,
-                );
-              }
-            }
-          }
+          // Post-coding overseer review and drift fix-up loop run in the
+          // discrete `analyze` stage (inserted by injectV2OverseerStages).
+          // Per-stack quality checks run in the discrete `checklist` stage.
 
           if (stage.category === "coding") {
             const notes = await readCodingNotes(workDir);

@@ -182,7 +182,7 @@ alwaysApply: true
         {
           "type": "lua-coding",
           "context": {
-            "focus": "Implement versus mode per merged DESIGN.md: scenes, input, HUD, and game loop changes. Keep modules testable where possible."
+            "focus": "Implement versus mode per merged spec.md / plan.md: scenes, input, HUD, and game loop changes. Keep modules testable where possible."
           }
         }
       ]

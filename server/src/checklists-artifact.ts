@@ -1,15 +1,10 @@
 /**
  * CHECKLISTS.md writer + ticker — stack-agnostic per-task quality checklist.
  *
- * Replaces the LÖVE-only `LOVE_SMOKE_CHECKLIST` env behaviour: every v2 task
- * gets a CHECKLISTS.md generated from spec.md (acceptance criteria), the
- * pipeline stack (smoke checks), and the constitution (governance checks).
- * The Tier 2 PR3 `checklist` stage will read this file, tick `[X]` items it
- * can confirm, and emit a structured pass/fail summary.
- *
- * Tier 2 PR1 ships only the writer + ticker; the consumer (checklist stage)
- * lands in PR3. With the writer in place, the file is visible in the workspace
- * and can be edited by humans or downstream tooling.
+ * Every task gets a CHECKLISTS.md generated from spec.md (acceptance criteria),
+ * the pipeline stack (smoke checks), and the constitution (governance checks).
+ * The `checklist` stage reads this file, ticks `[X]` items it can confirm, and
+ * emits a structured pass/fail summary.
  */
 import { promises as fs } from "fs";
 import * as path from "path";
@@ -65,7 +60,7 @@ function fallbackChecklists(stack: PipelineStack, originalTask: string): string 
     "",
     `- [ ] Implementation satisfies the user task: _${tagline}_`,
     "- [ ] Each REQUIREMENTS.md item (R1, R2, …) is implemented or deferral is documented in CODING_NOTES.md.",
-    "- [ ] DESIGN.md / spec.md / plan.md sections are reflected in code.",
+    "- [ ] spec.md / plan.md sections are reflected in code.",
     "",
     `## Smoke checks (stack: ${stack})`,
     "",

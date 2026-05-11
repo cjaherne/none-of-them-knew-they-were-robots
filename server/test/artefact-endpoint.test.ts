@@ -47,7 +47,7 @@ test("readArtefact: rejects file not in whitelist with 400", async () => {
   }
 });
 
-test("readArtefact: whitelist contains all v2 artefacts plus DESIGN/REQUIREMENTS", () => {
+test("readArtefact: whitelist contains spec/plan artefacts plus REQUIREMENTS", () => {
   const expected = [
     "constitution.md",
     "REQUIREMENTS.md",
@@ -55,11 +55,11 @@ test("readArtefact: whitelist contains all v2 artefacts plus DESIGN/REQUIREMENTS
     "plan.md",
     "TASKS.md",
     "CHECKLISTS.md",
-    "DESIGN.md",
   ];
   for (const f of expected) {
     assert.ok(ARTEFACT_WHITELIST.has(f), `whitelist missing ${f}`);
   }
+  assert.equal(ARTEFACT_WHITELIST.has("DESIGN.md"), false, "DESIGN.md must be retired from whitelist");
 });
 
 // ---------------------------------------------------------------------------
