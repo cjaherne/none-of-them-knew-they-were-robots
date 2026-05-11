@@ -231,6 +231,8 @@ The server loads skill packs from `skills/` (or `SKILLS_ROOT`), prepares the wor
 
 ## Development
 
+For **architecture, pipeline behaviour, and decision rationale** (kept separate from this quick-start README), see the **[`docs/`](docs/README.md)** folder.
+
 ```bash
 npm run build
 

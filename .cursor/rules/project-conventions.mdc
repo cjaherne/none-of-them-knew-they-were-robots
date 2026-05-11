@@ -1,0 +1,26 @@
+---
+description: Repo-wide pointers — skills, docs placement, removed paths, tone
+alwaysApply: true
+---
+
+# Project conventions
+
+## Workflows
+
+- **Application source changes** (branch, tests, docs): follow `.cursor/skills/source-change-workflow/SKILL.md`.
+- **Ship to `main`** (README, semver, build, PR, tag): follow `.cursor/skills/merge-to-main/SKILL.md`.
+
+## Documentation
+
+- **Onboarding / quick start / user-visible overview** → root `README.md`.
+- **Structure, behaviour, rationale** → `docs/` per the table in `docs/README.md`.
+- Prefer **links to source paths** over pasting large code blocks.
+
+## Do not resurrect removed surfaces
+
+v2.0+ dropped AWS CDK, Kubernetes/Helm, the Go operator, and container-based agent runtime. v2.1 renamed layout: **no** `test-harness/`, **no** `client/web/`. Do not add paths or docs that imply those trees exist.
+
+## Tone
+
+- **British English** in `README.md` and `docs/` (e.g. centralised, behaviour, colour).
+- No emojis in code or documentation unless the user explicitly asks.

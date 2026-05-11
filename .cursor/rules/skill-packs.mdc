@@ -1,0 +1,25 @@
+---
+description: Skill packs — release parity with merge-to-main and agent-runner
+globs: skills/**/*.{md,json}
+alwaysApply: false
+---
+
+# Skill packs (`skills/`)
+
+## Release workflow parity
+
+When you change **merge-to-main** behaviour, keep three places aligned:
+
+1. `.cursor/skills/merge-to-main/SKILL.md`
+2. `skills/release/system-prompt.md`
+3. `server/src/agent-runner.ts` — `PREAMBLE_RELEASE` (the injected brief for the release agent)
+
+Edits to any one should propagate to the others so the IDE skill and the in-pipeline release agent stay consistent.
+
+## Contract
+
+- `skills/<agent>/system-prompt.md` and optional `constraints.json` / `cursor-rules/` / `mcp.json` are loaded by `server/src/skill-loader.ts`. Prefer editing prompts here over embedding long strings in TypeScript.
+
+## Stage ↔ agent names
+
+- The orchestrator maps **stage → agent** in `server/src/pipeline-stages.ts`. Renaming a skill directory or agent slug requires updating that map and any references in the orchestrator or web UI.
